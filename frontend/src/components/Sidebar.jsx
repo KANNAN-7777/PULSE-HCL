@@ -1,4 +1,3 @@
-
 import {
   LayoutGrid,
   PlusSquare,
@@ -10,8 +9,8 @@ import {
   User,
   ChevronRight,
 } from "lucide-react";
+
 import { NavLink, useNavigate } from "react-router-dom";
-import { useEffect, useState } from "react";
 
 const NAV = [
   {
@@ -41,70 +40,86 @@ const NAV = [
   },
 ];
 
-function Sidebar() {
+function getBackendUrl() {
+  const apiUrl =
+    import.meta.env.VITE_API_URL ||
+    "http://localhost:8080/api";
+
+  return apiUrl.replace(/\/api\/?$/, "");
+}
+
+function getProfileImage(user) {
+  const image =
+    user?.profile_picture ||
+    user?.profileImage ||
+    user?.profilePicture ||
+    "";
+
+  if (!image) {
+    return "";
+  }
+
+  const value = String(image).trim();
+
+  if (!value) {
+    return "";
+  }
+
+  // Base64 image
+  if (value.startsWith("data:image/")) {
+    return value;
+  }
+
+  // Full URL
+  if (
+    value.startsWith("http://") ||
+    value.startsWith("https://")
+  ) {
+    return value;
+  }
+
+  // Relative backend path
+  return `${getBackendUrl()}${
+    value.startsWith("/") ? "" : "/"
+  }${value}`;
+}
+
+function Sidebar({ user = {} }) {
   const navigate = useNavigate();
-
-  const [user, setUser] = useState(() => {
-    try {
-      return JSON.parse(localStorage.getItem("user")) || {};
-    } catch {
-      return {};
-    }
-  });
-
-  const [imageError, setImageError] = useState(false);
-
-  useEffect(() => {
-    const updateUser = () => {
-      try {
-        setUser(JSON.parse(localStorage.getItem("user")) || {});
-      } catch {
-        setUser({});
-      }
-
-      setImageError(false);
-    };
-
-    window.addEventListener("profileImageUpdated", updateUser);
-    window.addEventListener("authChanged", updateUser);
-    window.addEventListener("storage", updateUser);
-
-    return () => {
-      window.removeEventListener("profileImageUpdated", updateUser);
-      window.removeEventListener("authChanged", updateUser);
-      window.removeEventListener("storage", updateUser);
-    };
-  }, []);
 
   const logout = () => {
     localStorage.removeItem("token");
     localStorage.removeItem("user");
 
-    window.dispatchEvent(new Event("authChanged"));
+    window.dispatchEvent(
+      new Event("authChanged")
+    );
 
-    navigate("/login", { replace: true });
+    navigate("/login", {
+      replace: true,
+    });
   };
 
-  const profileImagePath =
-    user?.profileImage ||
-    user?.profile_picture ||
-    user?.profilePicture ||
-    "";
+  const profileImage =
+    getProfileImage(user);
 
-  const profileImage = profileImagePath
-    ? profileImagePath.startsWith("http")
-      ? profileImagePath
-      : `http://localhost:8080${profileImagePath}`
-    : "";
+  const displayName =
+    user?.name ||
+    user?.username ||
+    "Creator";
 
-  const displayName = user?.name || "Creator";
-  const email = user?.email || "Creator account";
-  const profileInitial = displayName.charAt(0).toUpperCase();
+  const email =
+    user?.email ||
+    "Creator account";
 
-  const showProfileImage = Boolean(profileImage) && !imageError;
+  const profileInitial =
+    displayName
+      .charAt(0)
+      .toUpperCase();
 
   return (
     <aside className="sticky top-20 space-y-4 py-6">
+      {/* PROFILE CARD */}
       <div className="group/profile relative overflow-hidden rounded-2xl border border-[#292929] bg-[#111111] p-5 shadow-[0_12px_35px_rgba(0,0,0,0.12)] transition-all duration-300 hover:-translate-y-0.5 hover:border-[#FFD21F]/25 hover:bg-[#141414] hover:shadow-[0_18px_45px_rgba(0,0,0,0.22)]">
         <div className="pointer-events-none absolute -left-12 -top-12 h-28 w-28 rounded-full bg-[#FFD21F]/10 blur-3xl transition-all duration-700 group-hover/profile:bg-[#FFD21F]/15" />
 
@@ -113,16 +128,26 @@ function Sidebar() {
         <div className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-[#FFD21F]/40 to-transparent opacity-0 transition-opacity duration-500 group-hover/profile:opacity-100" />
 
         <div className="relative flex flex-col items-center text-center">
+          {/* AVATAR */}
           <div className="relative">
             <div className="absolute -inset-2 rounded-full bg-[#FFD21F]/10 blur-md transition-all duration-500 group-hover/profile:bg-[#FFD21F]/20 group-hover/profile:blur-lg" />
 
             <div className="relative flex h-16 w-16 items-center justify-center overflow-hidden rounded-full border-2 border-[#292929] bg-[#090909] text-xl font-bold text-[#FFD21F] transition-all duration-300 group-hover/profile:scale-105 group-hover/profile:border-[#FFD21F]/50 group-hover/profile:shadow-[0_0_25px_rgba(255,210,31,0.12)]">
-              {showProfileImage ? (
+              {profileImage ? (
                 <img
+                  key={profileImage}
                   src={profileImage}
-                  alt="Profile"
+                  alt={`${displayName} profile`}
                   className="h-full w-full object-cover"
-                  onError={() => setImageError(true)}
+                  onError={(event) => {
+                    console.error(
+                      "SIDEBAR PROFILE IMAGE FAILED:",
+                      profileImage
+                    );
+
+                    event.currentTarget.style.display =
+                      "none";
+                  }}
                 />
               ) : displayName ? (
                 <span>
@@ -133,24 +158,31 @@ function Sidebar() {
               )}
             </div>
 
-            <span className="absolute bottom-0 right-0 h-3.5 w-3.5 rounded-full border-2 border-[#111111] bg-emerald-400 shadow-[0_0_10px_rgba(34,197,94,0.5)] animate-pulse" />
+            <span className="absolute bottom-0 right-0 h-3.5 w-3.5 animate-pulse rounded-full border-2 border-[#111111] bg-emerald-400 shadow-[0_0_10px_rgba(34,197,94,0.5)]" />
           </div>
 
+          {/* NAME */}
           <button
             type="button"
-            onClick={() => navigate("/profile")}
+            onClick={() =>
+              navigate("/profile")
+            }
             className="mt-3 max-w-full truncate text-sm font-semibold text-zinc-200 transition-all duration-200 hover:-translate-y-0.5 hover:text-[#FFD21F]"
           >
             {displayName}
           </button>
 
+          {/* EMAIL */}
           <p className="mt-1 max-w-full truncate text-xs text-zinc-600">
             {email}
           </p>
 
+          {/* PROFILE BUTTON */}
           <button
             type="button"
-            onClick={() => navigate("/profile")}
+            onClick={() =>
+              navigate("/profile")
+            }
             className="group/profileButton mt-4 inline-flex items-center gap-1.5 rounded-full border border-[#FFD21F]/15 bg-[#FFD21F]/5 px-3 py-1.5 text-[10px] font-bold uppercase tracking-widest text-[#FFD21F] transition-all duration-300 hover:-translate-y-0.5 hover:border-[#FFD21F]/40 hover:bg-[#FFD21F]/10 hover:shadow-[0_0_15px_rgba(255,210,31,0.08)]"
           >
             Creator Profile
@@ -163,6 +195,7 @@ function Sidebar() {
         </div>
       </div>
 
+      {/* WORKSPACE */}
       <div>
         <div className="mb-2 flex items-center justify-between px-3">
           <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-zinc-700">
@@ -175,54 +208,57 @@ function Sidebar() {
         </div>
 
         <nav className="space-y-1">
-          {NAV.map(({ to, label, Icon }) => (
-            <NavLink
-              key={to}
-              to={to}
-              className={({ isActive }) =>
-                `group relative flex items-center gap-3 overflow-hidden rounded-xl border px-3 py-3 text-sm font-medium transition-all duration-300 ${
-                  isActive
-                    ? "border-[#FFD21F]/20 bg-[#FFD21F]/10 text-[#FFD21F] shadow-[0_8px_25px_rgba(255,210,31,0.05)]"
-                    : "border-transparent text-zinc-500 hover:translate-x-0.5 hover:border-[#292929] hover:bg-[#111111] hover:text-zinc-100"
-                }`
-              }
-            >
-              {({ isActive }) => (
-                <>
-                  {isActive && (
-                    <>
-                      <span className="absolute inset-y-2 left-0 w-0.5 rounded-full bg-[#FFD21F] shadow-[0_0_10px_rgba(255,210,31,0.55)]" />
+          {NAV.map(
+            ({ to, label, Icon }) => (
+              <NavLink
+                key={to}
+                to={to}
+                className={({ isActive }) =>
+                  `group relative flex items-center gap-3 overflow-hidden rounded-xl border px-3 py-3 text-sm font-medium transition-all duration-300 ${
+                    isActive
+                      ? "border-[#FFD21F]/20 bg-[#FFD21F]/10 text-[#FFD21F] shadow-[0_8px_25px_rgba(255,210,31,0.05)]"
+                      : "border-transparent text-zinc-500 hover:translate-x-0.5 hover:border-[#292929] hover:bg-[#111111] hover:text-zinc-100"
+                  }`
+                }
+              >
+                {({ isActive }) => (
+                  <>
+                    {isActive && (
+                      <>
+                        <span className="absolute inset-y-2 left-0 w-0.5 rounded-full bg-[#FFD21F] shadow-[0_0_10px_rgba(255,210,31,0.55)]" />
 
-                      <span className="pointer-events-none absolute inset-y-0 left-0 w-16 bg-gradient-to-r from-[#FFD21F]/5 to-transparent" />
-                    </>
-                  )}
+                        <span className="pointer-events-none absolute inset-y-0 left-0 w-16 bg-gradient-to-r from-[#FFD21F]/5 to-transparent" />
+                      </>
+                    )}
 
-                  <Icon
-                    size={17}
-                    className={`shrink-0 transition-all duration-300 group-hover:scale-110 ${
-                      isActive
-                        ? "text-[#FFD21F]"
-                        : "text-zinc-600 group-hover:text-zinc-300"
-                    }`}
-                  />
-
-                  <span className="flex-1">
-                    {label}
-                  </span>
-
-                  {isActive && (
-                    <ChevronRight
-                      size={14}
-                      className="text-[#FFD21F]/60 transition-transform duration-300 group-hover:translate-x-0.5"
+                    <Icon
+                      size={17}
+                      className={`shrink-0 transition-all duration-300 group-hover:scale-110 ${
+                        isActive
+                          ? "text-[#FFD21F]"
+                          : "text-zinc-600 group-hover:text-zinc-300"
+                      }`}
                     />
-                  )}
-                </>
-              )}
-            </NavLink>
-          ))}
+
+                    <span className="flex-1">
+                      {label}
+                    </span>
+
+                    {isActive && (
+                      <ChevronRight
+                        size={14}
+                        className="text-[#FFD21F]/60 transition-transform duration-300 group-hover:translate-x-0.5"
+                      />
+                    )}
+                  </>
+                )}
+              </NavLink>
+            )
+          )}
         </nav>
       </div>
 
+      {/* LIVE STATUS */}
       <div className="group/live relative overflow-hidden rounded-2xl border border-[#292929] bg-[#111111] p-4 shadow-[0_12px_35px_rgba(0,0,0,0.10)] transition-all duration-300 hover:-translate-y-0.5 hover:border-[#FFD21F]/20 hover:bg-[#141414]">
         <div className="pointer-events-none absolute right-[-30px] top-[-30px] h-24 w-24 rounded-full bg-[#FFD21F]/5 blur-3xl transition-all duration-500 group-hover/live:bg-[#FFD21F]/10" />
 
@@ -286,6 +322,7 @@ function Sidebar() {
         </div>
       </div>
 
+      {/* LOGOUT */}
       <button
         type="button"
         onClick={logout}
@@ -312,6 +349,7 @@ function Sidebar() {
           100% {
             background-position: 0% 50%;
           }
+
           50% {
             background-position: 100% 50%;
           }

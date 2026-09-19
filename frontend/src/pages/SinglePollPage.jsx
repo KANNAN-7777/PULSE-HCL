@@ -1,6 +1,14 @@
+import {
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 
-import { useEffect, useRef, useState } from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import {
+  useNavigate,
+  useParams,
+} from "react-router-dom";
+
 import {
   ArrowLeft,
   Check,
@@ -14,6 +22,10 @@ import {
 import Layout from "../components/Layout";
 import api from "../utils/api";
 
+/* ==================================================
+   POLL TYPE HELPERS
+================================================== */
+
 const normalizePollType = (type) => {
   return String(type || "")
     .trim()
@@ -22,7 +34,8 @@ const normalizePollType = (type) => {
 };
 
 const isOpenPollType = (type) => {
-  const normalized = normalizePollType(type);
+  const normalized =
+    normalizePollType(type);
 
   return (
     normalized === "open" ||
@@ -32,6 +45,10 @@ const isOpenPollType = (type) => {
     normalized === "text"
   );
 };
+
+/* ==================================================
+   DATE
+================================================== */
 
 function formatDate(dateValue) {
   if (!dateValue) {
@@ -44,24 +61,105 @@ function formatDate(dateValue) {
     return "Recently";
   }
 
-  return date.toLocaleDateString("en-IN", {
-    day: "2-digit",
-    month: "short",
-    year: "numeric",
-  });
+  return date.toLocaleDateString(
+    "en-IN",
+    {
+      day: "2-digit",
+      month: "short",
+      year: "numeric",
+    }
+  );
 }
 
+/* ==================================================
+   BACKEND URL
+================================================== */
+
+function getBackendUrl() {
+  const apiUrl =
+    import.meta.env.VITE_API_URL ||
+    "http://localhost:8080/api";
+
+  return apiUrl.replace(
+    /\/api\/?$/,
+    ""
+  );
+}
+
+/* ==================================================
+   IMAGE URL
+================================================== */
+
+function getImageUrl(image) {
+  if (!image) {
+    return "";
+  }
+
+  const value = String(image).trim();
+
+  if (!value) {
+    return "";
+  }
+
+  // Base64 image
+  if (
+    value.startsWith("data:image/")
+  ) {
+    return value;
+  }
+
+  // Full URL
+  if (
+    value.startsWith("http://") ||
+    value.startsWith("https://")
+  ) {
+    /*
+     * Convert old localhost URLs to
+     * the current backend URL.
+     */
+    if (
+      value.startsWith(
+        "http://localhost:8080"
+      )
+    ) {
+      return `${getBackendUrl()}${value.replace(
+        "http://localhost:8080",
+        ""
+      )}`;
+    }
+
+    return value;
+  }
+
+  // Relative backend path
+  return `${getBackendUrl()}${
+    value.startsWith("/") ? "" : "/"
+  }${value}`;
+}
+
+/* ==================================================
+   TOTAL VOTES
+================================================== */
+
 function getTotalVotes(poll) {
-  if (!poll?.options || !Array.isArray(poll.options)) {
+  if (
+    !poll?.options ||
+    !Array.isArray(poll.options)
+  ) {
     return 0;
   }
 
   return poll.options.reduce(
     (total, option) =>
-      total + Number(option?.votes || 0),
+      total +
+      Number(option?.votes || 0),
     0
   );
 }
+
+/* ==================================================
+   NORMALIZE POLL
+================================================== */
 
 function normalizePoll(responseData) {
   const pollData =
@@ -69,22 +167,38 @@ function normalizePoll(responseData) {
     responseData?.data ||
     responseData;
 
-  if (!pollData || typeof pollData !== "object") {
+  if (
+    !pollData ||
+    typeof pollData !== "object"
+  ) {
     return null;
   }
 
   return {
     ...pollData,
-    options: Array.isArray(pollData.options)
-      ? pollData.options.map((option) => ({
-          ...option,
-          votes: Number(option?.votes || 0),
-        }))
+
+    options: Array.isArray(
+      pollData.options
+    )
+      ? pollData.options.map(
+          (option) => ({
+            ...option,
+            votes: Number(
+              option?.votes || 0
+            ),
+          })
+        )
       : [],
   };
 }
 
-function getServerVoteStatus(responseData) {
+/* ==================================================
+   SERVER VOTE STATUS
+================================================== */
+
+function getServerVoteStatus(
+  responseData
+) {
   const pollData =
     responseData?.poll ||
     responseData?.data ||
@@ -98,14 +212,22 @@ function getServerVoteStatus(responseData) {
   );
 }
 
+/* ==================================================
+   SINGLE POLL PAGE
+================================================== */
+
 export default function SinglePollPage() {
   const { id } = useParams();
   const navigate = useNavigate();
 
-  const voteInProgressRef = useRef(false);
+  const voteInProgressRef =
+    useRef(false);
 
-  const [poll, setPoll] = useState(null);
-  const [totalResponses, setTotalResponses] = useState(0);
+  const [poll, setPoll] =
+    useState(null);
+
+  const [totalResponses, setTotalResponses] =
+    useState(0);
 
   const [selectedOption, setSelectedOption] =
     useState("");
@@ -113,20 +235,24 @@ export default function SinglePollPage() {
   const [openAnswer, setOpenAnswer] =
     useState("");
 
-  const [loading, setLoading] = useState(true);
-  const [voting, setVoting] = useState(false);
+  const [loading, setLoading] =
+    useState(true);
 
-  const [error, setError] = useState("");
-  const [success, setSuccess] = useState("");
+  const [voting, setVoting] =
+    useState(false);
+
+  const [error, setError] =
+    useState("");
+
+  const [success, setSuccess] =
+    useState("");
 
   const [hasVoted, setHasVoted] =
     useState(false);
 
-  /*
-   * ==================================================
-   * LOAD POLL
-   * ==================================================
-   */
+  /* ==================================================
+     LOAD POLL
+  ================================================== */
 
   useEffect(() => {
     let active = true;
@@ -146,22 +272,24 @@ export default function SinglePollPage() {
       setTotalResponses(0);
 
       try {
-        const response = await api.get(
-          `/polls/${id}`,
-          {
-            params: {
-              refresh: Date.now(),
-            },
-          }
-        );
+        const response =
+          await api.get(
+            `/polls/${id}`,
+            {
+              params: {
+                refresh: Date.now(),
+              },
+            }
+          );
 
         if (!active) {
           return;
         }
 
-        const pollData = normalizePoll(
-          response.data
-        );
+        const pollData =
+          normalizePoll(
+            response.data
+          );
 
         if (!pollData) {
           throw new Error(
@@ -172,22 +300,25 @@ export default function SinglePollPage() {
         setPoll(pollData);
 
         const open =
-          isOpenPollType(pollData.type);
+          isOpenPollType(
+            pollData.type
+          );
 
-        const serverTotal = Number(
-          response.data?.total_responses ??
-            response.data?.total_votes ??
-            0
-        );
+        const serverTotal =
+          Number(
+            response.data
+              ?.total_responses ??
+              response.data
+                ?.total_votes ??
+              0
+          );
 
         if (open) {
-          /*
-           * Open polls are repeatable.
-           *
-           * NEVER lock the form.
-           */
           setHasVoted(false);
-          setTotalResponses(serverTotal);
+
+          setTotalResponses(
+            serverTotal
+          );
         } else {
           setHasVoted(
             getServerVoteStatus(
@@ -197,7 +328,9 @@ export default function SinglePollPage() {
 
           setTotalResponses(
             serverTotal ||
-              getTotalVotes(pollData)
+              getTotalVotes(
+                pollData
+              )
           );
         }
       } catch (err) {
@@ -211,7 +344,8 @@ export default function SinglePollPage() {
         );
 
         setError(
-          err.response?.data?.message ||
+          err.response?.data
+            ?.message ||
             "Unable to load this poll."
         );
       } finally {
@@ -228,11 +362,9 @@ export default function SinglePollPage() {
     };
   }, [id]);
 
-  /*
-   * ==================================================
-   * HANDLE VOTE / RESPONSE
-   * ==================================================
-   */
+  /* ==================================================
+     HANDLE VOTE
+  ================================================== */
 
   const handleVote = async () => {
     if (!poll) {
@@ -240,15 +372,10 @@ export default function SinglePollPage() {
     }
 
     const open =
-      isOpenPollType(poll.type);
+      isOpenPollType(
+        poll.type
+      );
 
-    /*
-     * Normal polls:
-     * one vote per user.
-     *
-     * Open polls:
-     * unlimited responses.
-     */
     if (!open && hasVoted) {
       setSuccess(
         "You have already voted in this poll."
@@ -259,16 +386,11 @@ export default function SinglePollPage() {
       return;
     }
 
-    /*
-     * Prevent double-click submissions.
-     */
     if (voteInProgressRef.current) {
       return;
     }
 
-    /*
-     * Validation.
-     */
+    /* VALIDATION */
 
     if (open) {
       if (!openAnswer.trim()) {
@@ -292,7 +414,8 @@ export default function SinglePollPage() {
       }
     }
 
-    voteInProgressRef.current = true;
+    voteInProgressRef.current =
+      true;
 
     setVoting(true);
     setError("");
@@ -310,17 +433,7 @@ export default function SinglePollPage() {
           openAnswer.trim();
       }
 
-      console.log(
-        "VOTE REQUEST:",
-        {
-          pollId: id,
-          type: poll.type,
-        }
-      );
-
-      /*
-       * SAVE
-       */
+      /* SAVE VOTE */
 
       const voteResponse =
         await api.post(
@@ -333,22 +446,22 @@ export default function SinglePollPage() {
         voteResponse.data
       );
 
-      /*
-       * The backend directly tells us
-       * the new response count for open polls.
-       */
+      /* OPEN POLL COUNT */
 
       if (open) {
-        const serverCount = Number(
-          voteResponse.data
-            ?.total_responses ??
+        const serverCount =
+          Number(
             voteResponse.data
-              ?.total_votes ??
-            0
-        );
+              ?.total_responses ??
+              voteResponse.data
+                ?.total_votes ??
+              0
+          );
 
         if (
-          Number.isFinite(serverCount) &&
+          Number.isFinite(
+            serverCount
+          ) &&
           serverCount >= 0
         ) {
           setTotalResponses(
@@ -357,9 +470,7 @@ export default function SinglePollPage() {
         }
       }
 
-      /*
-       * Refresh MongoDB data.
-       */
+      /* REFRESH FROM MONGODB */
 
       try {
         const refreshedResponse =
@@ -378,7 +489,17 @@ export default function SinglePollPage() {
           );
 
         if (refreshedPoll) {
-          setPoll(refreshedPoll);
+          setPoll(
+            refreshedPoll
+          );
+
+          if (!open) {
+            setTotalResponses(
+              getTotalVotes(
+                refreshedPoll
+              )
+            );
+          }
         }
 
         const refreshedCount =
@@ -400,24 +521,16 @@ export default function SinglePollPage() {
             refreshedCount
           );
         }
-      } catch (refreshError) {
+      } catch (
+        refreshError
+      ) {
         console.error(
           "POLL REFRESH ERROR:",
           refreshError
         );
       }
 
-      /*
-       * ==================================================
-       * OPEN POLL
-       * ==================================================
-       *
-       * DO NOT:
-       *
-       * setHasVoted(true)
-       *
-       * because another response must remain possible.
-       */
+      /* OPEN POLL */
 
       if (open) {
         setHasVoted(false);
@@ -433,11 +546,7 @@ export default function SinglePollPage() {
         return;
       }
 
-      /*
-       * ==================================================
-       * NORMAL POLL
-       * ==================================================
-       */
+      /* NORMAL POLL */
 
       setHasVoted(true);
       setSelectedOption("");
@@ -454,19 +563,10 @@ export default function SinglePollPage() {
         err
       );
 
-      /*
-       * Normal poll duplicate vote.
-       */
-
       if (
         err.response?.status === 409
       ) {
         if (open) {
-          /*
-           * If this happens, the backend
-           * is not using the new open-poll
-           * logic.
-           */
           setHasVoted(false);
 
           setError(
@@ -479,7 +579,6 @@ export default function SinglePollPage() {
         }
 
         setHasVoted(true);
-
         setSelectedOption("");
         setOpenAnswer("");
 
@@ -505,38 +604,41 @@ export default function SinglePollPage() {
       }
 
       setError(
-        err.response?.data?.message ||
+        err.response?.data
+          ?.message ||
           "Unable to record your response."
       );
 
       setSuccess("");
     } finally {
       setVoting(false);
-      voteInProgressRef.current = false;
+
+      voteInProgressRef.current =
+        false;
     }
   };
 
-  /*
-   * ==================================================
-   * COUNTS
-   * ==================================================
-   */
+  /* ==================================================
+     COUNTS
+  ================================================== */
 
   const isOpenPoll =
-    isOpenPollType(poll?.type);
+    isOpenPollType(
+      poll?.type
+    );
 
-  const totalVotes = isOpenPoll
-    ? totalResponses
-    : getTotalVotes(poll);
+  const totalVotes =
+    isOpenPoll
+      ? totalResponses
+      : getTotalVotes(poll);
 
   const showResults =
-    hasVoted && !isOpenPoll;
+    hasVoted &&
+    !isOpenPoll;
 
-  /*
-   * ==================================================
-   * LOADING
-   * ==================================================
-   */
+  /* ==================================================
+     LOADING
+  ================================================== */
 
   if (loading) {
     return (
@@ -567,11 +669,9 @@ export default function SinglePollPage() {
     );
   }
 
-  /*
-   * ==================================================
-   * LOAD ERROR
-   * ==================================================
-   */
+  /* ==================================================
+     LOAD ERROR
+  ================================================== */
 
   if (error && !poll) {
     return (
@@ -579,8 +679,10 @@ export default function SinglePollPage() {
         <div className="mx-auto max-w-2xl px-4 py-6">
           <button
             type="button"
-            onClick={() => navigate(-1)}
-            className="group flex items-center gap-2 text-sm font-medium text-[#9CA3AF] transition hover:-translate-x-0.5 hover:text-[#FFD21F]"
+            onClick={() =>
+              navigate(-1)
+            }
+            className="group flex items-center gap-2 text-sm font-medium text-[#9CA3AF] transition hover:text-[#FFD21F]"
           >
             <ArrowLeft size={16} />
             Back
@@ -630,26 +732,46 @@ export default function SinglePollPage() {
     );
   }
 
-  const pollType = normalizePollType(
-    poll.type
-  );
+  /* ==================================================
+     POLL TYPE
+  ================================================== */
+
+  const pollType =
+    normalizePollType(
+      poll.type
+    );
+
+  /* ==================================================
+     PAGE
+  ================================================== */
 
   return (
     <Layout>
       <div className="relative mx-auto max-w-3xl overflow-hidden px-4 py-6 pb-8">
+
+        {/* BACK */}
+
         <button
           type="button"
-          onClick={() => navigate(-1)}
+          onClick={() =>
+            navigate(-1)
+          }
           className="group flex items-center gap-2 text-sm font-medium text-[#9CA3AF] transition hover:text-[#FFD21F]"
         >
           <ArrowLeft size={16} />
           Back
         </button>
 
+        {/* POLL CARD */}
+
         <div className="mt-5 overflow-hidden rounded-3xl border border-[#292929] bg-[#111111] shadow-[0_25px_70px_rgba(0,0,0,0.35)]">
+
           <div className="h-1 bg-gradient-to-r from-[#FFD21F] via-[#FFE66D] to-[#FFD21F]" />
 
           <div className="p-5 sm:p-7">
+
+            {/* HEADER */}
+
             <div className="flex items-start gap-4">
               <div className="relative flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl border border-green-500/20 bg-green-500/10">
                 <Radio
@@ -659,7 +781,9 @@ export default function SinglePollPage() {
               </div>
 
               <div className="min-w-0 flex-1">
+
                 <div className="mb-3 flex flex-wrap items-center gap-2">
+
                   <span className="inline-flex items-center gap-1.5 rounded-full border border-green-500/20 bg-green-500/10 px-3 py-1.5 text-[9px] font-black uppercase tracking-wider text-green-400">
                     <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-green-400" />
                     LIVE
@@ -676,6 +800,7 @@ export default function SinglePollPage() {
                       Open Response
                     </span>
                   )}
+
                 </div>
 
                 <h1 className="text-xl font-black leading-8 tracking-tight text-white sm:text-2xl">
@@ -697,8 +822,11 @@ export default function SinglePollPage() {
                       : "votes"}
                   </span>
                 </div>
+
               </div>
             </div>
+
+            {/* ERROR */}
 
             {error && (
               <div className="mt-5 rounded-2xl border border-red-500/20 bg-red-500/10 px-4 py-3 text-xs leading-5 text-red-400">
@@ -706,15 +834,21 @@ export default function SinglePollPage() {
               </div>
             )}
 
+            {/* SUCCESS */}
+
             {success && (
               <div className="mt-5 flex items-start gap-3 rounded-2xl border border-green-500/20 bg-green-500/10 px-4 py-3 text-xs leading-5 text-green-400">
                 <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-green-500/10">
                   <Check size={14} />
                 </div>
 
-                <span>{success}</span>
+                <span>
+                  {success}
+                </span>
               </div>
             )}
+
+            {/* RESULTS */}
 
             {showResults ? (
               <div className="mt-6">
@@ -757,10 +891,16 @@ export default function SinglePollPage() {
               </div>
             ) : (
               <div className="mt-6">
+
+                {/* SINGLE CHOICE */}
+
                 {pollType === "single" && (
                   <div className="space-y-3">
                     {poll.options?.map(
-                      (option, index) => {
+                      (
+                        option,
+                        index
+                      ) => {
                         const optionId =
                           String(
                             option.id ??
@@ -776,6 +916,7 @@ export default function SinglePollPage() {
                           <button
                             key={
                               option.id ||
+                              option._id ||
                               index
                             }
                             type="button"
@@ -818,10 +959,15 @@ export default function SinglePollPage() {
                   </div>
                 )}
 
+                {/* YES / NO */}
+
                 {pollType === "yesno" && (
                   <div className="grid grid-cols-2 gap-3">
                     {poll.options?.map(
-                      (option, index) => {
+                      (
+                        option,
+                        index
+                      ) => {
                         const optionId =
                           String(
                             option.id ??
@@ -837,6 +983,7 @@ export default function SinglePollPage() {
                           <button
                             key={
                               option.id ||
+                              option._id ||
                               index
                             }
                             type="button"
@@ -861,6 +1008,8 @@ export default function SinglePollPage() {
                   </div>
                 )}
 
+                {/* RATING */}
+
                 {pollType === "rating" && (
                   <div>
                     <div className="mb-3 flex items-center gap-2">
@@ -873,7 +1022,10 @@ export default function SinglePollPage() {
 
                     <div className="grid grid-cols-5 gap-2">
                       {poll.options?.map(
-                        (option, index) => {
+                        (
+                          option,
+                          index
+                        ) => {
                           const optionId =
                             String(
                               option.id ??
@@ -889,6 +1041,7 @@ export default function SinglePollPage() {
                             <button
                               key={
                                 option.id ||
+                                option._id ||
                                 index
                               }
                               type="button"
@@ -912,6 +1065,8 @@ export default function SinglePollPage() {
                   </div>
                 )}
 
+                {/* IMAGE POLL */}
+
                 {pollType === "image" && (
                   <div>
                     <p className="mb-3 text-xs font-bold uppercase tracking-wider text-[#9CA3AF]">
@@ -920,7 +1075,10 @@ export default function SinglePollPage() {
 
                     <div className="grid grid-cols-2 gap-3">
                       {poll.options?.map(
-                        (option, index) => {
+                        (
+                          option,
+                          index
+                        ) => {
                           const optionId =
                             String(
                               option.id ??
@@ -932,15 +1090,24 @@ export default function SinglePollPage() {
                             selectedOption ===
                             optionId;
 
-                          const imageUrl =
+                          const rawImageUrl =
                             option.image ||
                             option.image_url ||
-                            option.url;
+                            option.imageUrl ||
+                            option.url ||
+                            option.src ||
+                            "";
+
+                          const imageUrl =
+                            getImageUrl(
+                              rawImageUrl
+                            );
 
                           return (
                             <button
                               key={
                                 option.id ||
+                                option._id ||
                                 index
                               }
                               type="button"
@@ -949,10 +1116,10 @@ export default function SinglePollPage() {
                                   optionId
                                 )
                               }
-                              className={`group relative overflow-hidden rounded-2xl border ${
+                              className={`group relative overflow-hidden rounded-2xl border transition ${
                                 selected
                                   ? "border-[#FFD21F] ring-1 ring-[#FFD21F]/50"
-                                  : "border-[#292929]"
+                                  : "border-[#292929] hover:border-[#FFD21F]/30"
                               }`}
                             >
                               {imageUrl ? (
@@ -964,17 +1131,66 @@ export default function SinglePollPage() {
                                       index + 1
                                     }`
                                   }
-                                  className="aspect-square w-full object-cover"
+                                  className="aspect-square w-full object-cover transition duration-300 group-hover:scale-[1.02]"
+                                  onLoad={() => {
+                                    console.log(
+                                      "POLL IMAGE LOADED:",
+                                      imageUrl
+                                    );
+                                  }}
+                                  onError={(
+                                    event
+                                  ) => {
+                                    console.error(
+                                      "POLL IMAGE FAILED:",
+                                      imageUrl
+                                    );
+
+                                    event.currentTarget.style.display =
+                                      "none";
+
+                                    const parent =
+                                      event
+                                        .currentTarget
+                                        .parentElement;
+
+                                    if (
+                                      parent &&
+                                      !parent.querySelector(
+                                        ".image-error-fallback"
+                                      )
+                                    ) {
+                                      const fallback =
+                                        document.createElement(
+                                          "div"
+                                        );
+
+                                      fallback.className =
+                                        "image-error-fallback flex aspect-square items-center justify-center bg-[#090909] px-4 text-center text-xs text-[#6B7280]";
+
+                                      fallback.textContent =
+                                        "Image unavailable";
+
+                                      parent.insertBefore(
+                                        fallback,
+                                        event
+                                          .currentTarget
+                                          .nextSibling
+                                      );
+                                    }
+                                  }}
                                 />
                               ) : (
-                                <div className="flex aspect-square items-center justify-center bg-[#090909] text-xs text-[#6B7280]">
+                                <div className="flex aspect-square items-center justify-center bg-[#090909] px-4 text-center text-xs text-[#6B7280]">
                                   Image unavailable
                                 </div>
                               )}
 
                               {selected && (
-                                <div className="absolute right-2 top-2 flex h-8 w-8 items-center justify-center rounded-full bg-[#FFD21F] text-black">
-                                  <Check size={15} />
+                                <div className="absolute right-2 top-2 flex h-8 w-8 items-center justify-center rounded-full bg-[#FFD21F] text-black shadow-lg">
+                                  <Check
+                                    size={15}
+                                  />
                                 </div>
                               )}
 
@@ -990,6 +1206,8 @@ export default function SinglePollPage() {
                     </div>
                   </div>
                 )}
+
+                {/* OPEN RESPONSE */}
 
                 {isOpenPoll && (
                   <div>
@@ -1016,16 +1234,23 @@ export default function SinglePollPage() {
                   </div>
                 )}
 
+                {/* FALLBACK OPTIONS */}
+
                 {![
                   "single",
                   "yesno",
                   "rating",
                   "image",
                   "open",
-                ].includes(pollType) && (
+                ].includes(
+                  pollType
+                ) && (
                   <div className="space-y-3">
                     {poll.options?.map(
-                      (option, index) => {
+                      (
+                        option,
+                        index
+                      ) => {
                         const optionId =
                           String(
                             option.id ??
@@ -1041,6 +1266,7 @@ export default function SinglePollPage() {
                           <button
                             key={
                               option.id ||
+                              option._id ||
                               index
                             }
                             type="button"
@@ -1063,9 +1289,13 @@ export default function SinglePollPage() {
                   </div>
                 )}
 
+                {/* SUBMIT */}
+
                 <button
                   type="button"
-                  onClick={handleVote}
+                  onClick={
+                    handleVote
+                  }
                   disabled={voting}
                   className="group mt-6 flex w-full items-center justify-center gap-2 rounded-2xl bg-[#FFD21F] px-4 py-3.5 text-sm font-black text-black transition hover:-translate-y-0.5 hover:bg-[#FFE66D] disabled:cursor-not-allowed disabled:opacity-50"
                 >
@@ -1075,7 +1305,6 @@ export default function SinglePollPage() {
                         size={17}
                         className="animate-spin"
                       />
-
                       Submitting...
                     </>
                   ) : (
@@ -1092,6 +1321,8 @@ export default function SinglePollPage() {
             )}
           </div>
         </div>
+
+        {/* FOOTER */}
 
         <div className="mt-4 rounded-2xl border border-[#292929] bg-[#111111]/70 px-4 py-3 text-center">
           <p className="text-[10px] leading-5 text-[#6B7280]">

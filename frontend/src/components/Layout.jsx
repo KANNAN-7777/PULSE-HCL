@@ -1,4 +1,3 @@
-
 import {
   Search,
   Plus,
@@ -12,11 +11,13 @@ import {
   X,
   User,
 } from "lucide-react";
+
 import {
   NavLink,
   useLocation,
   useNavigate,
 } from "react-router-dom";
+
 import { useEffect, useState } from "react";
 import Sidebar from "./Sidebar";
 
@@ -50,12 +51,22 @@ const NAV = [
 
 function getStoredUser() {
   try {
-    return JSON.parse(
-      localStorage.getItem("user")
-    ) || {};
+    return (
+      JSON.parse(
+        localStorage.getItem("user")
+      ) || {}
+    );
   } catch {
     return {};
   }
+}
+
+function getBackendUrl() {
+  const apiUrl =
+    import.meta.env.VITE_API_URL ||
+    "http://localhost:8080/api";
+
+  return apiUrl.replace(/\/api\/?$/, "");
 }
 
 function getProfileImage(user) {
@@ -69,35 +80,29 @@ function getProfileImage(user) {
     return "";
   }
 
-  /*
-   * Base64 image:
-   * data:image/jpeg;base64,...
-   */
-  if (image.startsWith("data:image/")) {
-    return image;
+  const value = String(image).trim();
+
+  if (!value) {
+    return "";
   }
 
-  /*
-   * Complete URL:
-   * http://...
-   * https://...
-   */
+  // Base64 image
+  if (value.startsWith("data:image/")) {
+    return value;
+  }
+
+  // Full URL
   if (
-    image.startsWith("http://") ||
-    image.startsWith("https://")
+    value.startsWith("http://") ||
+    value.startsWith("https://")
   ) {
-    return image;
+    return value;
   }
 
-  /*
-   * Backend uploaded image:
-   * /uploads/profiles/...
-   */
-  if (image.startsWith("/")) {
-    return `http://localhost:8080${image}`;
-  }
-
-  return image;
+  // Backend uploaded image
+  return `${getBackendUrl()}${
+    value.startsWith("/") ? "" : "/"
+  }${value}`;
 }
 
 function Layout({ children, wide = false }) {
@@ -112,7 +117,8 @@ function Layout({ children, wide = false }) {
   );
 
   /*
-   * Reload user whenever profile/login/logout changes.
+   * Reload the latest user from localStorage
+   * whenever authentication/profile information changes.
    */
   useEffect(() => {
     const updateUser = () => {
@@ -152,9 +158,6 @@ function Layout({ children, wide = false }) {
     };
   }, []);
 
-  /*
-   * Close mobile menu after navigation.
-   */
   useEffect(() => {
     setMobileMenu(false);
   }, [location.pathname]);
@@ -172,7 +175,8 @@ function Layout({ children, wide = false }) {
     });
   };
 
-  const profileImage = getProfileImage(user);
+  const profileImage =
+    getProfileImage(user);
 
   const displayName =
     user?.name ||
@@ -191,10 +195,6 @@ function Layout({ children, wide = false }) {
     const [imageError, setImageError] =
       useState(false);
 
-    /*
-     * When the user changes their profile image,
-     * allow the new image to render again.
-     */
     useEffect(() => {
       setImageError(false);
     }, [profileImage]);
@@ -212,6 +212,11 @@ function Layout({ children, wide = false }) {
             alt={`${displayName} profile`}
             className="relative h-full w-full object-cover"
             onError={() => {
+              console.error(
+                "PROFILE IMAGE FAILED:",
+                profileImage
+              );
+
               setImageError(true);
             }}
           />
@@ -400,7 +405,7 @@ function Layout({ children, wide = false }) {
 
       <div className="relative z-10 mx-auto flex w-full max-w-[1600px] gap-6 px-4 sm:px-6 lg:px-8">
         <div className="hidden w-52 shrink-0 lg:block">
-          <Sidebar />
+          <Sidebar user={user} />
         </div>
 
         <main className="min-w-0 flex-1 py-6 pb-24 lg:pb-8">

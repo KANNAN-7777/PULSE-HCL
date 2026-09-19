@@ -1,4 +1,3 @@
-
 package main
 
 import (
@@ -10,6 +9,7 @@ import (
 
 	"pulse-backend/config"
 	"pulse-backend/routes"
+	pollws "pulse-backend/websocket"
 )
 
 func corsMiddleware() gin.HandlerFunc {
@@ -68,22 +68,38 @@ func main() {
 
 	// Connect MongoDB
 	if err := config.ConnectDatabase(); err != nil {
-		log.Fatal("MongoDB connection failed:", err)
+		log.Fatal(
+			"MongoDB connection failed:",
+			err,
+		)
 	}
 
 	// Connect Redis
 	config.ConnectRedis()
 
+	// Create Gin router
 	router := gin.Default()
 
-	// CORS must run before the routes.
+	// CORS
 	router.Use(corsMiddleware())
 
-	// Authentication routes.
+	// Serve uploaded files
+	router.Static(
+		"/uploads",
+		"./uploads",
+	)
+
+	// Authentication routes
 	routes.AuthRoutes(router)
 
-	// Poll routes.
+	// Poll routes
 	routes.PollRoutes(router)
+
+	// WebSocket route
+	router.GET(
+		"/ws/polls/:id",
+		pollws.HandlePollWebSocket,
+	)
 
 	log.Println(
 		"PULSE backend running on http://localhost:8080",
