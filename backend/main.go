@@ -12,12 +12,18 @@ import (
 	"pulse-backend/routes"
 )
 
+
 func corsMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		origin := c.GetHeader("Origin")
 
-		if origin == "http://localhost:5174" ||
-			origin == "http://localhost:5173" {
+		allowedOrigins := map[string]bool{
+			"http://localhost:5173":       true,
+			"http://localhost:5174":       true,
+			"https://pulse-hcl.vercel.app": true,
+		}
+
+		if allowedOrigins[origin] {
 			c.Header(
 				"Access-Control-Allow-Origin",
 				origin,
@@ -40,15 +46,15 @@ func corsMiddleware() gin.HandlerFunc {
 		}
 
 		if c.Request.Method == "OPTIONS" {
-			c.AbortWithStatus(
-				http.StatusNoContent,
-			)
+			c.AbortWithStatus(http.StatusNoContent)
 			return
 		}
 
 		c.Next()
 	}
 }
+
+
 
 func main() {
 	if err := godotenv.Load(); err != nil {
