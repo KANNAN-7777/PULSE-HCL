@@ -1,0 +1,484 @@
+@import "tailwindcss";
+
+:root {
+  font-family:
+    Inter,
+    ui-sans-serif,
+    system-ui,
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    sans-serif;
+
+  color: #ffffff;
+  background: #050505;
+
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+  background: #050505;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+
+  background:
+    radial-gradient(
+      circle at 15% 10%,
+      rgba(255, 210, 31, 0.07),
+      transparent 28%
+    ),
+    radial-gradient(
+      circle at 85% 90%,
+      rgba(64, 144, 240, 0.05),
+      transparent 30%
+    ),
+    #050505;
+}
+
+body::before {
+  content: "";
+
+  position: fixed;
+  inset: 0;
+
+  pointer-events: none;
+  z-index: -1;
+
+  background-image:
+    linear-gradient(
+      rgba(255, 255, 255, 0.018) 1px,
+      transparent 1px
+    ),
+    linear-gradient(
+      90deg,
+      rgba(255, 255, 255, 0.018) 1px,
+      transparent 1px
+    );
+
+  background-size: 48px 48px;
+
+  mask-image: linear-gradient(
+    to bottom,
+    black,
+    transparent 85%
+  );
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: not-allowed;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+img {
+  max-width: 100%;
+  display: block;
+}
+
+#root {
+  min-height: 100vh;
+}
+
+/* -------------------------------- */
+/* PULSE COLORS */
+/* -------------------------------- */
+
+:root {
+  --pulse-bg: #050505;
+  --pulse-card: #111111;
+  --pulse-secondary: #090909;
+  --pulse-primary: #ffd21f;
+  --pulse-hover: #ffe66d;
+  --pulse-border: #292929;
+  --pulse-text: #ffffff;
+  --pulse-muted: #9ca3af;
+  --pulse-live: #22c55e;
+  --pulse-blue: #4090f0;
+  --pulse-danger: #f43f5e;
+}
+
+/* -------------------------------- */
+/* FUTURISTIC ANIMATIONS */
+/* -------------------------------- */
+
+@keyframes pulseGlow {
+  0%,
+  100% {
+    opacity: 0.35;
+    transform: scale(1);
+  }
+
+  50% {
+    opacity: 0.65;
+    transform: scale(1.08);
+  }
+}
+
+@keyframes float {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+
+  50% {
+    transform: translateY(-7px);
+  }
+}
+
+@keyframes fadeUp {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes shimmer {
+  0% {
+    background-position: -200% 0;
+  }
+
+  100% {
+    background-position: 200% 0;
+  }
+}
+
+@keyframes scanline {
+  0% {
+    transform: translateY(-100%);
+  }
+
+  100% {
+    transform: translateY(100vh);
+  }
+}
+
+@keyframes borderPulse {
+  0%,
+  100% {
+    border-color: rgba(63, 63, 70, 0.6);
+  }
+
+  50% {
+    border-color: rgba(255, 210, 31, 0.35);
+  }
+}
+
+@keyframes yellowGlow {
+  0%,
+  100% {
+    box-shadow:
+      0 0 0 rgba(255, 210, 31, 0),
+      0 0 0 rgba(255, 210, 31, 0);
+  }
+
+  50% {
+    box-shadow:
+      0 0 18px rgba(255, 210, 31, 0.08),
+      0 0 35px rgba(255, 210, 31, 0.04);
+  }
+}
+
+@keyframes livePulse {
+  0%,
+  100% {
+    opacity: 0.7;
+    transform: scale(1);
+  }
+
+  50% {
+    opacity: 1;
+    transform: scale(1.15);
+  }
+}
+
+/* -------------------------------- */
+/* UTILITY ANIMATIONS */
+/* -------------------------------- */
+
+.animate-pulse-glow {
+  animation: pulseGlow 4s ease-in-out infinite;
+}
+
+.animate-float {
+  animation: float 4s ease-in-out infinite;
+}
+
+.animate-fade-up {
+  animation: fadeUp 0.5s ease-out both;
+}
+
+.animate-fade-in {
+  animation: fadeIn 0.4s ease-out both;
+}
+
+.animate-border-pulse {
+  animation: borderPulse 3s ease-in-out infinite;
+}
+
+.animate-yellow-glow {
+  animation: yellowGlow 3s ease-in-out infinite;
+}
+
+.animate-live-pulse {
+  animation: livePulse 2s ease-in-out infinite;
+}
+
+/* -------------------------------- */
+/* FUTURISTIC GLASS */
+/* -------------------------------- */
+
+.pulse-glass {
+  background: rgba(17, 17, 17, 0.78);
+
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+
+  border: 1px solid rgba(41, 41, 41, 0.85);
+
+  box-shadow:
+    0 20px 60px rgba(0, 0, 0, 0.3),
+    inset 0 1px 0 rgba(255, 255, 255, 0.025);
+}
+
+.pulse-glass-hover {
+  transition:
+    transform 0.25s ease,
+    border-color 0.25s ease,
+    box-shadow 0.25s ease,
+    background 0.25s ease;
+}
+
+.pulse-glass-hover:hover {
+  transform: translateY(-3px);
+
+  border-color: rgba(255, 210, 31, 0.3);
+
+  background: rgba(20, 20, 20, 0.88);
+
+  box-shadow:
+    0 25px 70px rgba(0, 0, 0, 0.4),
+    0 0 30px rgba(255, 210, 31, 0.05);
+}
+
+/* -------------------------------- */
+/* PULSE NEON TEXT */
+/* -------------------------------- */
+
+.pulse-neon {
+  color: #ffd21f;
+
+  text-shadow:
+    0 0 12px rgba(255, 210, 31, 0.25),
+    0 0 30px rgba(255, 210, 31, 0.08);
+}
+
+.pulse-neon-blue {
+  color: #4090f0;
+
+  text-shadow:
+    0 0 12px rgba(64, 144, 240, 0.2),
+    0 0 28px rgba(64, 144, 240, 0.06);
+}
+
+.pulse-live {
+  color: #22c55e;
+}
+
+/* -------------------------------- */
+/* BUTTON EFFECTS */
+/* -------------------------------- */
+
+.pulse-button {
+  position: relative;
+  overflow: hidden;
+
+  transition:
+    transform 0.25s ease,
+    box-shadow 0.25s ease,
+    background 0.25s ease;
+}
+
+.pulse-button::before {
+  content: "";
+
+  position: absolute;
+  inset: 0;
+
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(255, 255, 255, 0.18),
+    transparent
+  );
+
+  transform: translateX(-120%);
+
+  transition: transform 0.6s ease;
+
+  pointer-events: none;
+}
+
+.pulse-button:hover {
+  transform: translateY(-2px);
+}
+
+.pulse-button:hover::before {
+  transform: translateX(120%);
+}
+
+/* -------------------------------- */
+/* LIVE INDICATOR */
+/* -------------------------------- */
+
+.pulse-live-dot {
+  display: inline-block;
+
+  width: 7px;
+  height: 7px;
+
+  border-radius: 999px;
+
+  background: #22c55e;
+
+  box-shadow:
+    0 0 8px rgba(34, 197, 94, 0.5),
+    0 0 18px rgba(34, 197, 94, 0.2);
+
+  animation: livePulse 2s ease-in-out infinite;
+}
+
+/* -------------------------------- */
+/* SCROLLBAR */
+/* -------------------------------- */
+
+::-webkit-scrollbar {
+  width: 7px;
+  height: 7px;
+}
+
+::-webkit-scrollbar-track {
+  background: #090909;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #292929;
+  border-radius: 999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #414141;
+}
+
+/* -------------------------------- */
+/* SELECTION */
+/* -------------------------------- */
+
+::selection {
+  background: rgba(255, 210, 31, 0.25);
+  color: #ffffff;
+}
+
+/* -------------------------------- */
+/* FORM AUTOFILL */
+/* -------------------------------- */
+
+input:-webkit-autofill,
+input:-webkit-autofill:hover,
+input:-webkit-autofill:focus,
+textarea:-webkit-autofill,
+textarea:-webkit-autofill:hover,
+textarea:-webkit-autofill:focus {
+  -webkit-text-fill-color: #ffffff;
+
+  -webkit-box-shadow: 0 0 0 1000px #090909 inset;
+
+  transition:
+    background-color 5000s ease-in-out 0s,
+    border-color 0.25s ease;
+}
+
+/* -------------------------------- */
+/* MOBILE */
+/* -------------------------------- */
+
+@media (max-width: 640px) {
+  body::before {
+    background-size: 36px 36px;
+  }
+}
+
+/* -------------------------------- */
+/* REDUCE MOTION */
+/* -------------------------------- */
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+
+    scroll-behavior: auto !important;
+
+    transition-duration: 0.01ms !important;
+  }
+}
+@keyframes cursorBlink {
+  0%, 45% {
+    opacity: 1;
+  }
+
+  50%, 100% {
+    opacity: 0;
+  }
+}
+
+.animate-cursor {
+  animation: cursorBlink 0.7s infinite;
+}
+
+.animate-shimmer {
+  animation: shimmer 2s infinite;
+}
