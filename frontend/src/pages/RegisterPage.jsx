@@ -31,12 +31,10 @@ export default function RegisterPage() {
   const [preview, setPreview] = useState("");
 
   const [otp, setOtp] = useState("");
-
   const [otpSent, setOtpSent] = useState(false);
   const [otpVerified, setOtpVerified] = useState(false);
 
   const [resendTimer, setResendTimer] = useState(0);
-
   const [showPassword, setShowPassword] = useState(false);
 
   const [loading, setLoading] = useState(false);
@@ -68,6 +66,11 @@ export default function RegisterPage() {
       return false;
     }
 
+    if (name.trim().length < 2) {
+      setError("Name must contain at least 2 characters.");
+      return false;
+    }
+
     if (!username.trim()) {
       setError("Please enter a username.");
       return false;
@@ -75,6 +78,11 @@ export default function RegisterPage() {
 
     if (username.trim().length < 3) {
       setError("Username must be at least 3 characters.");
+      return false;
+    }
+
+    if (username.trim().length > 30) {
+      setError("Username must be less than 30 characters.");
       return false;
     }
 
@@ -105,6 +113,11 @@ export default function RegisterPage() {
       return false;
     }
 
+    if (password.length > 72) {
+      setError("Password must be less than 72 characters.");
+      return false;
+    }
+
     return true;
   };
 
@@ -126,7 +139,6 @@ export default function RegisterPage() {
     }
 
     setError("");
-
     setProfileImage(file);
 
     const imageUrl = URL.createObjectURL(file);
@@ -149,7 +161,7 @@ export default function RegisterPage() {
       setLoading(true);
 
       const response = await api.post(
-        "/auth/register/send-otp",
+        "/auth/send-registration-otp",
         {
           email: email.trim().toLowerCase(),
         }
@@ -164,9 +176,11 @@ export default function RegisterPage() {
           "OTP sent successfully to your email."
       );
     } catch (err) {
+      console.error("SEND OTP ERROR:", err);
+
       setError(
-        err.response?.data?.error ||
-          err.response?.data?.message ||
+        err.response?.data?.message ||
+          err.response?.data?.error ||
           "Failed to send OTP."
       );
     } finally {
@@ -195,6 +209,38 @@ export default function RegisterPage() {
     try {
       setLoading(true);
 
+      /*
+       * STEP 1
+       * Verify the OTP.
+       *
+       * Backend endpoint:
+       * POST /api/auth/verify-registration-otp
+       */
+      const verifyResponse = await api.post(
+        "/auth/verify-registration-otp",
+        {
+          email: email.trim().toLowerCase(),
+          otp: otp.trim(),
+        }
+      );
+
+      if (!verifyResponse.data?.success) {
+        throw new Error(
+          verifyResponse.data?.message ||
+            "Email verification failed."
+        );
+      }
+
+      /*
+       * STEP 2
+       * Now create the actual user account.
+       *
+       * Backend endpoint:
+       * POST /api/auth/register
+       *
+       * Register expects multipart/form-data because
+       * profile_picture is optional.
+       */
       const formData = new FormData();
 
       formData.append("name", name.trim());
@@ -204,7 +250,6 @@ export default function RegisterPage() {
         email.trim().toLowerCase()
       );
       formData.append("password", password);
-      formData.append("otp", otp.trim());
 
       if (profileImage) {
         formData.append(
@@ -213,23 +258,23 @@ export default function RegisterPage() {
         );
       }
 
-      const response = await api.post(
-        "/auth/register/verify-otp",
+      const registerResponse = await api.post(
+        "/auth/register",
         formData
       );
 
-      const user = response.data?.user;
+      const user = registerResponse.data?.user;
 
       if (!user) {
         throw new Error(
-          "Registration completed but user data was not returned."
+          "Account created but user data was not returned."
         );
       }
 
-      if (response.data?.token) {
+      if (registerResponse.data?.token) {
         localStorage.setItem(
           "token",
-          response.data.token
+          registerResponse.data.token
         );
       }
 
@@ -243,8 +288,9 @@ export default function RegisterPage() {
       );
 
       setOtpVerified(true);
+
       setMessage(
-        response.data?.message ||
+        registerResponse.data?.message ||
           "Account created successfully."
       );
 
@@ -254,11 +300,16 @@ export default function RegisterPage() {
         });
       }, 1200);
     } catch (err) {
+      console.error(
+        "VERIFY / REGISTER ERROR:",
+        err
+      );
+
       setError(
-        err.response?.data?.error ||
-          err.response?.data?.message ||
+        err.response?.data?.message ||
+          err.response?.data?.error ||
           err.message ||
-          "OTP verification failed."
+          "Registration failed."
       );
     } finally {
       setLoading(false);
@@ -277,7 +328,7 @@ export default function RegisterPage() {
       setLoading(true);
 
       const response = await api.post(
-        "/auth/register/send-otp",
+        "/auth/send-registration-otp",
         {
           email: email.trim().toLowerCase(),
         }
@@ -293,9 +344,14 @@ export default function RegisterPage() {
           "A new OTP has been sent."
       );
     } catch (err) {
+      console.error(
+        "RESEND OTP ERROR:",
+        err
+      );
+
       setError(
-        err.response?.data?.error ||
-          err.response?.data?.message ||
+        err.response?.data?.message ||
+          err.response?.data?.error ||
           "Failed to resend OTP."
       );
     } finally {
@@ -359,7 +415,6 @@ export default function RegisterPage() {
   return (
     <AuthLayout>
       <div className="rounded-3xl border border-white/10 bg-[#0c1117]/95 p-6 shadow-2xl backdrop-blur-xl sm:p-8">
-
         <div className="mb-6">
           <Link
             to="/login"
@@ -434,7 +489,6 @@ export default function RegisterPage() {
           </div>
         ) : (
           <div className="space-y-4">
-
             <div className="flex justify-center">
               <label
                 htmlFor="profile-picture"
