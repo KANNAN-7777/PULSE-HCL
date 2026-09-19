@@ -11,41 +11,55 @@ import (
 
 func AuthMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
-
-		authHeader := strings.TrimSpace(
-			c.GetHeader("Authorization"),
-		)
+		authHeader := c.GetHeader("Authorization")
 
 		if authHeader == "" {
 			c.JSON(http.StatusUnauthorized, gin.H{
-				"message": "Authorization token is required",
+				"success": false,
+				"message": "Authorization header is required",
 			})
+
 			c.Abort()
 			return
 		}
 
-		parts := strings.Fields(authHeader)
+		parts := strings.SplitN(
+			authHeader,
+			" ",
+			2,
+		)
 
 		if len(parts) != 2 ||
 			!strings.EqualFold(parts[0], "Bearer") {
-
 			c.JSON(http.StatusUnauthorized, gin.H{
-				"message": "Invalid authorization format",
+				"success": false,
+				"message": "Invalid authorization header",
 			})
+
 			c.Abort()
 			return
 		}
 
 		tokenString := strings.TrimSpace(parts[1])
 
-		jwtSecret := strings.TrimSpace(
-			os.Getenv("JWT_SECRET"),
-		)
+		if tokenString == "" {
+			c.JSON(http.StatusUnauthorized, gin.H{
+				"success": false,
+				"message": "Token is missing",
+			})
+
+			c.Abort()
+			return
+		}
+
+		jwtSecret := os.Getenv("JWT_SECRET")
 
 		if jwtSecret == "" {
 			c.JSON(http.StatusInternalServerError, gin.H{
-				"message": "JWT_SECRET is not configured",
+				"success": false,
+				"message": "JWT_SECRET is missing",
 			})
+
 			c.Abort()
 			return
 		}
@@ -53,9 +67,8 @@ func AuthMiddleware() gin.HandlerFunc {
 		token, err := jwt.Parse(
 			tokenString,
 			func(token *jwt.Token) (interface{}, error) {
-
 				if token.Method != jwt.SigningMethodHS256 {
-					return nil, jwt.ErrTokenSignatureInvalid
+					return nil, jwt.ErrSignatureInvalid
 				}
 
 				return []byte(jwtSecret), nil
@@ -64,8 +77,10 @@ func AuthMiddleware() gin.HandlerFunc {
 
 		if err != nil || !token.Valid {
 			c.JSON(http.StatusUnauthorized, gin.H{
+				"success": false,
 				"message": "Invalid or expired token",
 			})
+
 			c.Abort()
 			return
 		}
@@ -74,32 +89,44 @@ func AuthMiddleware() gin.HandlerFunc {
 
 		if !ok {
 			c.JSON(http.StatusUnauthorized, gin.H{
+				"success": false,
 				"message": "Invalid token claims",
 			})
+
 			c.Abort()
 			return
 		}
 
-		// Support user_id
-		userID, _ := claims["user_id"].(string)
+		userID, ok := claims["user_id"].(string)
 
-		// Also support id for compatibility
-		if strings.TrimSpace(userID) == "" {
-			userID, _ = claims["id"].(string)
-		}
-
-		if strings.TrimSpace(userID) == "" {
+		if !ok || userID == "" {
 			c.JSON(http.StatusUnauthorized, gin.H{
-				"message": "User ID not found in token",
+				"success": false,
+				"message": "Invalid user ID in token",
 			})
+
 			c.Abort()
 			return
 		}
 
-		email, _ := claims["email"].(string)
+		c.Set(
+			"user_id",
+			userID,
+		)
 
-		c.Set("user_id", userID)
-		c.Set("email", email)
+		if email, ok := claims["email"].(string); ok {
+			c.Set(
+				"user_email",
+				email,
+			)
+		}
+
+		if role, ok := claims["role"].(string); ok {
+			c.Set(
+				"user_role",
+				role,
+			)
+		}
 
 		c.Next()
 	}

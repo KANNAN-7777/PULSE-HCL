@@ -31,4 +31,31 @@ api.interceptors.request.use(
   }
 );
 
+api.interceptors.response.use(
+  (response) => {
+    return response;
+  },
+  (error) => {
+    if (error.response) {
+      console.error(
+        "API ERROR:",
+        error.response.status,
+        error.response.data
+      );
+    } else if (error.request) {
+      console.error(
+        "API NETWORK ERROR:",
+        error.message
+      );
+    } else {
+      console.error(
+        "API REQUEST ERROR:",
+        error.message
+      );
+    }
+
+    return Promise.reject(error);
+  }
+);
+
 export default api;

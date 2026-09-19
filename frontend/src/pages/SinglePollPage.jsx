@@ -1,3 +1,4 @@
+
 import { useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import {
@@ -12,6 +13,25 @@ import {
 
 import Layout from "../components/Layout";
 import api from "../utils/api";
+
+const normalizePollType = (type) => {
+  return String(type || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[-_\s]/g, "");
+};
+
+const isOpenPollType = (type) => {
+  const normalized = normalizePollType(type);
+
+  return (
+    normalized === "open" ||
+    normalized === "openpoll" ||
+    normalized === "openquestion" ||
+    normalized === "openended" ||
+    normalized === "text"
+  );
+};
 
 function formatDate(dateValue) {
   if (!dateValue) {
@@ -64,71 +84,6 @@ function normalizePoll(responseData) {
   };
 }
 
-/*
- * Get the current logged-in user's ID.
- *
- * This makes the local vote marker specific to the
- * current user, so another user on the same browser
- * will not inherit the previous user's vote state.
- */
-function getCurrentUserId() {
-  try {
-    const user = JSON.parse(
-      localStorage.getItem("user") || "null"
-    );
-
-    return (
-      user?.id ||
-      user?._id ||
-      user?.user_id ||
-      user?.userId ||
-      "current-user"
-    );
-  } catch {
-    return "current-user";
-  }
-}
-
-/*
- * One unique key for:
- *
- *   current user + current poll
- *
- * Example:
- *
- * pulse:voted:USER_ID:POLL_ID
- */
-function getVoteStorageKey(pollId) {
-  const userId = getCurrentUserId();
-
-  return `pulse:voted:${String(
-    userId
-  )}:${String(pollId)}`;
-}
-
-function hasLocalVote(pollId) {
-  try {
-    return (
-      localStorage.getItem(
-        getVoteStorageKey(pollId)
-      ) === "true"
-    );
-  } catch {
-    return false;
-  }
-}
-
-function saveLocalVote(pollId) {
-  try {
-    localStorage.setItem(
-      getVoteStorageKey(pollId),
-      "true"
-    );
-  } catch {
-    // Ignore localStorage errors.
-  }
-}
-
 function getServerVoteStatus(responseData) {
   const pollData =
     responseData?.poll ||
@@ -143,68 +98,14 @@ function getServerVoteStatus(responseData) {
   );
 }
 
-function mergePollData(
-  currentPoll,
-  incomingPoll
-) {
-  if (!incomingPoll) {
-    return currentPoll;
-  }
-
-  if (!currentPoll) {
-    return incomingPoll;
-  }
-
-  /*
-   * Never allow a stale GET response to reduce
-   * a vote count that is already visible locally.
-   */
-  const mergedOptions = (
-    incomingPoll.options || []
-  ).map((incomingOption) => {
-    const currentOption =
-      (
-        currentPoll.options || []
-      ).find(
-        (option) =>
-          String(option.id) ===
-          String(incomingOption.id)
-      );
-
-    if (!currentOption) {
-      return incomingOption;
-    }
-
-    const currentVotes = Number(
-      currentOption.votes || 0
-    );
-
-    const incomingVotes = Number(
-      incomingOption.votes || 0
-    );
-
-    if (currentVotes > incomingVotes) {
-      return {
-        ...incomingOption,
-        votes: currentVotes,
-      };
-    }
-
-    return incomingOption;
-  });
-
-  return {
-    ...incomingPoll,
-    options: mergedOptions,
-  };
-}
-
 export default function SinglePollPage() {
-  const voteInProgressRef = useRef(false);
   const { id } = useParams();
   const navigate = useNavigate();
 
+  const voteInProgressRef = useRef(false);
+
   const [poll, setPoll] = useState(null);
+  const [totalResponses, setTotalResponses] = useState(0);
 
   const [selectedOption, setSelectedOption] =
     useState("");
@@ -212,449 +113,40 @@ export default function SinglePollPage() {
   const [openAnswer, setOpenAnswer] =
     useState("");
 
-  const [loading, setLoading] =
-    useState(true);
+  const [loading, setLoading] = useState(true);
+  const [voting, setVoting] = useState(false);
 
-  const [voting, setVoting] =
-    useState(false);
-
-  const [error, setError] =
-    useState("");
-
-  const [success, setSuccess] =
-    useState("");
+  const [error, setError] = useState("");
+  const [success, setSuccess] = useState("");
 
   const [hasVoted, setHasVoted] =
     useState(false);
 
   /*
-   * --------------------------------------------------
+   * ==================================================
    * LOAD POLL
-   * --------------------------------------------------
-   *
-   * Important logic:
-   *
-   * 1. Check local vote state first.
-   * 2. Ask backend for latest poll.
-   * 3. If backend says TRUE -> TRUE.
-   * 4. If backend says FALSE but local says TRUE
-   *    -> KEEP TRUE.
-   *
-   * This prevents stale GET data from changing:
-   *
-   *     true -> false
+   * ==================================================
    */
-  const loadPoll = async () => {
-    const localVote = hasLocalVote(id);
 
-    /*
-     * Restore successful vote immediately.
-     */
-    if (localVote) {
-      setHasVoted(true);
-    }
+  useEffect(() => {
+    let active = true;
 
-    try {
+    const loadPoll = async () => {
+      if (!id) {
+        return;
+      }
+
+      setLoading(true);
+      setPoll(null);
+      setSelectedOption("");
+      setOpenAnswer("");
       setError("");
-
-      const response = await api.get(
-        `/polls/${id}`,
-        {
-          params: {
-            refresh: Date.now(),
-          },
-        }
-      );
-
-      const pollData = normalizePoll(
-        response.data
-      );
-
-      if (!pollData) {
-        throw new Error(
-          "Invalid poll response"
-        );
-      }
-
-      /*
-       * Keep the newest visible vote count.
-       */
-      setPoll((currentPoll) =>
-        mergePollData(
-          currentPoll,
-          pollData
-        )
-      );
-
-      const serverVote =
-        getServerVoteStatus(
-          response.data
-        );
-
-      /*
-       * Backend says user voted.
-       *
-       * Save locally as well.
-       */
-      if (serverVote) {
-        saveLocalVote(id);
-        setHasVoted(true);
-      } else if (localVote) {
-        /*
-         * Backend returned stale false.
-         *
-         * DO NOT reset the successful local state.
-         */
-        setHasVoted(true);
-      }
-    } catch (err) {
-      console.error(
-        "LOAD POLL ERROR:",
-        err
-      );
-
-      /*
-       * If local vote exists, keep the page
-       * in voted state even if GET fails.
-       */
-      if (localVote) {
-        setHasVoted(true);
-      } else {
-        setError(
-          err.response?.data?.message ||
-            "Unable to load this poll."
-        );
-      }
-    } finally {
-      setLoading(false);
-    }
-  };
-
-useEffect(() => {
-  let active = true;
-
-  const load = async () => {
-    if (!id) {
-      return;
-    }
-
-    setLoading(true);
-    setPoll(null);
-    setSelectedOption("");
-    setOpenAnswer("");
-    setError("");
-    setSuccess("");
-
-    const localVote = hasLocalVote(id);
-
-    if (localVote) {
-      setHasVoted(true);
-    } else {
+      setSuccess("");
       setHasVoted(false);
-    }
+      setTotalResponses(0);
 
-    try {
-      const response = await api.get(
-        `/polls/${id}`,
-        {
-          params: {
-            refresh: Date.now(),
-          },
-        }
-      );
-
-      if (!active) {
-        return;
-      }
-
-      const pollData = normalizePoll(
-        response.data
-      );
-
-      if (!pollData) {
-        throw new Error(
-          "Invalid poll response"
-        );
-      }
-
-      setPoll(pollData);
-
-      const serverVote =
-        getServerVoteStatus(
-          response.data
-        );
-
-      if (serverVote || localVote) {
-        if (serverVote) {
-          saveLocalVote(id);
-        }
-
-        setHasVoted(true);
-      }
-    } catch (err) {
-      if (!active) {
-        return;
-      }
-
-      console.error(
-        "LOAD POLL ERROR:",
-        err
-      );
-
-      if (localVote) {
-        setHasVoted(true);
-      } else {
-        setError(
-          err.response?.data?.message ||
-            "Unable to load this poll."
-        );
-      }
-    } finally {
-      if (active) {
-        setLoading(false);
-      }
-    }
-  };
-
-  load();
-
-  return () => {
-    active = false;
-  };
-}, [id]);
-
-  /*
-   * --------------------------------------------------
-   * HANDLE VOTE
-   * --------------------------------------------------
-   */
-const handleVote = async () => {
-  if (!poll) {
-    return;
-  }
-
-  if (hasVoted) {
-    return;
-  }
-
-  if (voteInProgressRef.current) {
-    return;
-  }
-
-  const pollType = String(
-    poll.type || ""
-  ).toLowerCase();
-
-  if (pollType === "open") {
-    if (!openAnswer.trim()) {
-      setError("Please enter your response.");
-      setSuccess("");
-      return;
-    }
-  } else {
-    if (!selectedOption) {
-      setError("Please select an option.");
-      setSuccess("");
-      return;
-    }
-  }
-
-  voteInProgressRef.current = true;
-  setVoting(true);
-  setError("");
-  setSuccess("");
-
-  const votedOptionId = selectedOption;
-
-  try {
-    const payload = {
-      option_id:
-        pollType === "open"
-          ? ""
-          : String(votedOptionId),
-    };
-
-    if (pollType === "open") {
-      payload.answer = openAnswer.trim();
-    }
-
-    console.log("=================================");
-    console.log("SUBMITTING VOTE");
-    console.log("Poll ID:", id);
-    console.log("Poll Type:", pollType);
-    console.log("Payload:", payload);
-    console.log("=================================");
-
-    /*
-     * -----------------------------------------
-     * STEP 1: SAVE VOTE TO BACKEND
-     * -----------------------------------------
-     */
-    let voteResponse;
-
-    try {
-      voteResponse = await api.post(
-        `/polls/${id}/vote`,
-        payload
-      );
-    } catch (voteError) {
-      console.error(
-        "VOTE POST ERROR:",
-        voteError
-      );
-
-      console.error(
-        "STATUS:",
-        voteError.response?.status
-      );
-
-      console.error(
-        "DATA:",
-        voteError.response?.data
-      );
-
-      /*
-       * User already voted.
-       */
-      if (
-        voteError.response?.status === 409
-      ) {
-        saveLocalVote(id);
-
-        setHasVoted(true);
-        setSelectedOption("");
-        setOpenAnswer("");
-
-        setError("");
-
-        setSuccess(
-          "You have already voted in this poll."
-        );
-
-        return;
-      }
-
-      /*
-       * Authentication problem.
-       */
-      if (
-        voteError.response?.status === 401
-      ) {
-        setError(
-          "Your session has expired. Please login again."
-        );
-
-        return;
-      }
-
-      /*
-       * Bad request.
-       */
-      if (
-        voteError.response?.status === 400
-      ) {
-        setError(
-          voteError.response?.data?.message ||
-            "Please select a valid option."
-        );
-
-        return;
-      }
-
-      /*
-       * Server error.
-       */
-      setError(
-        voteError.response?.data?.message ||
-          "Unable to record your vote."
-      );
-
-      return;
-    }
-
-    console.log(
-      "VOTE SUCCESS:",
-      voteResponse?.data
-    );
-
-    /*
-     * -----------------------------------------
-     * STEP 2: POST SUCCESS
-     * -----------------------------------------
-     *
-     * From this point onward the vote has
-     * successfully reached the backend.
-     */
-    saveLocalVote(id);
-
-    setHasVoted(true);
-
-    setSelectedOption("");
-    setOpenAnswer("");
-
-    setSuccess(
-      "Your response has been recorded successfully."
-    );
-
-    setError("");
-
-    /*
-     * -----------------------------------------
-     * STEP 3: UPDATE LOCAL COUNT IMMEDIATELY
-     * -----------------------------------------
-     */
-    if (
-      pollType !== "open" &&
-      votedOptionId
-    ) {
-      setPoll((currentPoll) => {
-        if (!currentPoll) {
-          return currentPoll;
-        }
-
-        return {
-          ...currentPoll,
-
-          options: (
-            currentPoll.options || []
-          ).map((option) => {
-            if (
-              String(
-                option.id ??
-                  option._id ??
-                  ""
-              ) ===
-              String(votedOptionId)
-            ) {
-              return {
-                ...option,
-                votes:
-                  Number(
-                    option.votes || 0
-                  ) + 1,
-              };
-            }
-
-            return option;
-          }),
-        };
-      });
-    }
-
-    /*
-     * -----------------------------------------
-     * STEP 4: REFRESH FROM BACKEND
-     * -----------------------------------------
-     *
-     * This is intentionally separate from
-     * the POST error handling.
-     *
-     * If this GET fails, the vote is still
-     * considered successful.
-     */
-    try {
-      const refreshedResponse =
-        await api.get(
+      try {
+        const response = await api.get(
           `/polls/${id}`,
           {
             params: {
@@ -663,80 +155,397 @@ const handleVote = async () => {
           }
         );
 
-      const refreshedPoll =
-        normalizePoll(
-          refreshedResponse.data
+        if (!active) {
+          return;
+        }
+
+        const pollData = normalizePoll(
+          response.data
         );
 
-      if (refreshedPoll) {
-        setPoll((currentPoll) =>
-          mergePollData(
-            currentPoll,
-            refreshedPoll
-          )
+        if (!pollData) {
+          throw new Error(
+            "Invalid poll response"
+          );
+        }
+
+        setPoll(pollData);
+
+        const open =
+          isOpenPollType(pollData.type);
+
+        const serverTotal = Number(
+          response.data?.total_responses ??
+            response.data?.total_votes ??
+            0
         );
+
+        if (open) {
+          /*
+           * Open polls are repeatable.
+           *
+           * NEVER lock the form.
+           */
+          setHasVoted(false);
+          setTotalResponses(serverTotal);
+        } else {
+          setHasVoted(
+            getServerVoteStatus(
+              response.data
+            )
+          );
+
+          setTotalResponses(
+            serverTotal ||
+              getTotalVotes(pollData)
+          );
+        }
+      } catch (err) {
+        if (!active) {
+          return;
+        }
+
+        console.error(
+          "LOAD POLL ERROR:",
+          err
+        );
+
+        setError(
+          err.response?.data?.message ||
+            "Unable to load this poll."
+        );
+      } finally {
+        if (active) {
+          setLoading(false);
+        }
+      }
+    };
+
+    loadPoll();
+
+    return () => {
+      active = false;
+    };
+  }, [id]);
+
+  /*
+   * ==================================================
+   * HANDLE VOTE / RESPONSE
+   * ==================================================
+   */
+
+  const handleVote = async () => {
+    if (!poll) {
+      return;
+    }
+
+    const open =
+      isOpenPollType(poll.type);
+
+    /*
+     * Normal polls:
+     * one vote per user.
+     *
+     * Open polls:
+     * unlimited responses.
+     */
+    if (!open && hasVoted) {
+      setSuccess(
+        "You have already voted in this poll."
+      );
+
+      setError("");
+
+      return;
+    }
+
+    /*
+     * Prevent double-click submissions.
+     */
+    if (voteInProgressRef.current) {
+      return;
+    }
+
+    /*
+     * Validation.
+     */
+
+    if (open) {
+      if (!openAnswer.trim()) {
+        setError(
+          "Please enter your response."
+        );
+
+        setSuccess("");
+
+        return;
+      }
+    } else {
+      if (!selectedOption) {
+        setError(
+          "Please select an option."
+        );
+
+        setSuccess("");
+
+        return;
+      }
+    }
+
+    voteInProgressRef.current = true;
+
+    setVoting(true);
+    setError("");
+    setSuccess("");
+
+    try {
+      const payload = {
+        option_id: open
+          ? ""
+          : String(selectedOption),
+      };
+
+      if (open) {
+        payload.answer =
+          openAnswer.trim();
       }
 
-      /*
-       * Never turn true back into false.
-       */
-      if (
-        getServerVoteStatus(
-          refreshedResponse.data
-        )
-      ) {
-        saveLocalVote(id);
-      }
-
-      setHasVoted(true);
-    } catch (refreshError) {
-      console.error(
-        "REFRESH AFTER VOTE FAILED:",
-        refreshError
+      console.log(
+        "VOTE REQUEST:",
+        {
+          pollId: id,
+          type: poll.type,
+        }
       );
 
       /*
-       * POST already succeeded.
-       *
-       * Therefore the user MUST remain in
-       * voted state.
+       * SAVE
        */
-      saveLocalVote(id);
+
+      const voteResponse =
+        await api.post(
+          `/polls/${id}/vote`,
+          payload
+        );
+
+      console.log(
+        "VOTE RESPONSE:",
+        voteResponse.data
+      );
+
+      /*
+       * The backend directly tells us
+       * the new response count for open polls.
+       */
+
+      if (open) {
+        const serverCount = Number(
+          voteResponse.data
+            ?.total_responses ??
+            voteResponse.data
+              ?.total_votes ??
+            0
+        );
+
+        if (
+          Number.isFinite(serverCount) &&
+          serverCount >= 0
+        ) {
+          setTotalResponses(
+            serverCount
+          );
+        }
+      }
+
+      /*
+       * Refresh MongoDB data.
+       */
+
+      try {
+        const refreshedResponse =
+          await api.get(
+            `/polls/${id}`,
+            {
+              params: {
+                refresh: Date.now(),
+              },
+            }
+          );
+
+        const refreshedPoll =
+          normalizePoll(
+            refreshedResponse.data
+          );
+
+        if (refreshedPoll) {
+          setPoll(refreshedPoll);
+        }
+
+        const refreshedCount =
+          Number(
+            refreshedResponse.data
+              ?.total_responses ??
+              refreshedResponse.data
+                ?.total_votes ??
+              0
+          );
+
+        if (
+          Number.isFinite(
+            refreshedCount
+          ) &&
+          refreshedCount >= 0
+        ) {
+          setTotalResponses(
+            refreshedCount
+          );
+        }
+      } catch (refreshError) {
+        console.error(
+          "POLL REFRESH ERROR:",
+          refreshError
+        );
+      }
+
+      /*
+       * ==================================================
+       * OPEN POLL
+       * ==================================================
+       *
+       * DO NOT:
+       *
+       * setHasVoted(true)
+       *
+       * because another response must remain possible.
+       */
+
+      if (open) {
+        setHasVoted(false);
+        setSelectedOption("");
+        setOpenAnswer("");
+
+        setSuccess(
+          "Response recorded. You can submit another response."
+        );
+
+        setError("");
+
+        return;
+      }
+
+      /*
+       * ==================================================
+       * NORMAL POLL
+       * ==================================================
+       */
+
       setHasVoted(true);
+      setSelectedOption("");
+      setOpenAnswer("");
+
+      setSuccess(
+        "Your vote has been recorded successfully."
+      );
+
+      setError("");
+    } catch (err) {
+      console.error(
+        "VOTE ERROR:",
+        err
+      );
+
+      /*
+       * Normal poll duplicate vote.
+       */
+
+      if (
+        err.response?.status === 409
+      ) {
+        if (open) {
+          /*
+           * If this happens, the backend
+           * is not using the new open-poll
+           * logic.
+           */
+          setHasVoted(false);
+
+          setError(
+            "The backend is still preventing multiple responses for this open poll."
+          );
+
+          setSuccess("");
+
+          return;
+        }
+
+        setHasVoted(true);
+
+        setSelectedOption("");
+        setOpenAnswer("");
+
+        setSuccess(
+          "You have already voted in this poll."
+        );
+
+        setError("");
+
+        return;
+      }
+
+      if (
+        err.response?.status === 401
+      ) {
+        setError(
+          "Your session has expired. Please login again."
+        );
+
+        setSuccess("");
+
+        return;
+      }
+
+      setError(
+        err.response?.data?.message ||
+          "Unable to record your response."
+      );
+
+      setSuccess("");
+    } finally {
+      setVoting(false);
+      voteInProgressRef.current = false;
     }
-  } finally {
-    setVoting(false);
-
-    /*
-     * Release the synchronous duplicate-click
-     * lock only after everything is finished.
-     */
-    voteInProgressRef.current = false;
-  }
-};
-
-  const totalVotes =
-    getTotalVotes(poll);
+  };
 
   /*
-   * --------------------------------------------------
-   * LOADING
-   * --------------------------------------------------
+   * ==================================================
+   * COUNTS
+   * ==================================================
    */
+
+  const isOpenPoll =
+    isOpenPollType(poll?.type);
+
+  const totalVotes = isOpenPoll
+    ? totalResponses
+    : getTotalVotes(poll);
+
+  const showResults =
+    hasVoted && !isOpenPoll;
+
+  /*
+   * ==================================================
+   * LOADING
+   * ==================================================
+   */
+
   if (loading) {
     return (
       <Layout>
         <div className="relative flex min-h-[65vh] items-center justify-center overflow-hidden">
           <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(255,210,31,0.10),transparent_38%)]" />
 
-          <div className="absolute left-[15%] top-[20%] h-32 w-32 animate-pulse rounded-full bg-[#FFD21F]/5 blur-3xl" />
-
-          <div className="absolute bottom-[15%] right-[15%] h-40 w-40 animate-pulse rounded-full bg-[#4090F0]/5 blur-3xl" />
-
           <div className="relative flex flex-col items-center gap-4">
             <div className="relative flex h-16 w-16 items-center justify-center rounded-2xl border border-[#FFD21F]/25 bg-[#FFD21F]/10">
-              <div className="absolute inset-0 animate-ping rounded-2xl bg-[#FFD21F]/5" />
-
               <Loader2
                 size={28}
                 className="relative animate-spin text-[#FFD21F]"
@@ -759,19 +568,18 @@ const handleVote = async () => {
   }
 
   /*
-   * --------------------------------------------------
+   * ==================================================
    * LOAD ERROR
-   * --------------------------------------------------
+   * ==================================================
    */
+
   if (error && !poll) {
     return (
       <Layout>
         <div className="mx-auto max-w-2xl px-4 py-6">
           <button
             type="button"
-            onClick={() =>
-              navigate(-1)
-            }
+            onClick={() => navigate(-1)}
             className="group flex items-center gap-2 text-sm font-medium text-[#9CA3AF] transition hover:-translate-x-0.5 hover:text-[#FFD21F]"
           >
             <ArrowLeft size={16} />
@@ -792,7 +600,9 @@ const handleVote = async () => {
 
               <button
                 type="button"
-                onClick={loadPoll}
+                onClick={() =>
+                  window.location.reload()
+                }
                 className="mt-5 rounded-xl bg-[#FFD21F] px-5 py-3 text-xs font-bold text-black"
               >
                 Try Again
@@ -804,11 +614,6 @@ const handleVote = async () => {
     );
   }
 
-  /*
-   * --------------------------------------------------
-   * NO POLL
-   * --------------------------------------------------
-   */
   if (!poll) {
     return (
       <Layout>
@@ -825,19 +630,16 @@ const handleVote = async () => {
     );
   }
 
-  /*
-   * --------------------------------------------------
-   * PAGE
-   * --------------------------------------------------
-   */
+  const pollType = normalizePollType(
+    poll.type
+  );
+
   return (
     <Layout>
       <div className="relative mx-auto max-w-3xl overflow-hidden px-4 py-6 pb-8">
         <button
           type="button"
-          onClick={() =>
-            navigate(-1)
-          }
+          onClick={() => navigate(-1)}
           className="group flex items-center gap-2 text-sm font-medium text-[#9CA3AF] transition hover:text-[#FFD21F]"
         >
           <ArrowLeft size={16} />
@@ -852,7 +654,7 @@ const handleVote = async () => {
               <div className="relative flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl border border-green-500/20 bg-green-500/10">
                 <Radio
                   size={19}
-                  className="relative text-green-400"
+                  className="text-green-400"
                 />
               </div>
 
@@ -866,6 +668,12 @@ const handleVote = async () => {
                   {poll.category && (
                     <span className="rounded-full border border-[#292929] bg-[#090909] px-3 py-1.5 text-[9px] font-bold uppercase tracking-wider text-[#9CA3AF]">
                       {poll.category}
+                    </span>
+                  )}
+
+                  {isOpenPoll && (
+                    <span className="rounded-full border border-[#FFD21F]/20 bg-[#FFD21F]/10 px-3 py-1.5 text-[9px] font-black uppercase tracking-wider text-[#FFD21F]">
+                      Open Response
                     </span>
                   )}
                 </div>
@@ -883,7 +691,10 @@ const handleVote = async () => {
                   </span>
 
                   <span>
-                    {totalVotes} votes
+                    {totalVotes}{" "}
+                    {isOpenPoll
+                      ? "responses"
+                      : "votes"}
                   </span>
                 </div>
               </div>
@@ -901,18 +712,11 @@ const handleVote = async () => {
                   <Check size={14} />
                 </div>
 
-                <span>
-                  {success}
-                </span>
+                <span>{success}</span>
               </div>
             )}
 
-            {hasVoted ? (
-              /*
-               * ----------------------------------------
-               * VOTED STATE
-               * ----------------------------------------
-               */
+            {showResults ? (
               <div className="mt-6">
                 <div className="rounded-2xl border border-green-500/20 bg-green-500/5 p-6 text-center">
                   <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-full border border-green-500/20 bg-green-500/10 text-green-400">
@@ -952,26 +756,21 @@ const handleVote = async () => {
                 </button>
               </div>
             ) : (
-              /*
-               * ----------------------------------------
-               * VOTE FORM
-               * ----------------------------------------
-               */
               <div className="mt-6">
-                {poll.type === "single" && (
+                {pollType === "single" && (
                   <div className="space-y-3">
                     {poll.options?.map(
-                      (
-                        option,
-                        index
-                      ) => {
-                       const selected =
-  selectedOption ===
-  String(
-    option.id ??
-      option._id ??
-      ""
-  );
+                      (option, index) => {
+                        const optionId =
+                          String(
+                            option.id ??
+                              option._id ??
+                              ""
+                          );
+
+                        const selected =
+                          selectedOption ===
+                          optionId;
 
                         return (
                           <button
@@ -982,7 +781,7 @@ const handleVote = async () => {
                             type="button"
                             onClick={() =>
                               setSelectedOption(
-                                option.id
+                                optionId
                               )
                             }
                             className={`group flex w-full items-center gap-3 rounded-2xl border p-4 text-left transition ${
@@ -1019,16 +818,20 @@ const handleVote = async () => {
                   </div>
                 )}
 
-                {poll.type === "yesno" && (
+                {pollType === "yesno" && (
                   <div className="grid grid-cols-2 gap-3">
                     {poll.options?.map(
-                      (
-                        option,
-                        index
-                      ) => {
+                      (option, index) => {
+                        const optionId =
+                          String(
+                            option.id ??
+                              option._id ??
+                              ""
+                          );
+
                         const selected =
                           selectedOption ===
-                          option.id;
+                          optionId;
 
                         return (
                           <button
@@ -1039,7 +842,7 @@ const handleVote = async () => {
                             type="button"
                             onClick={() =>
                               setSelectedOption(
-                                option.id
+                                optionId
                               )
                             }
                             className={`rounded-2xl border p-5 text-center transition ${
@@ -1058,7 +861,7 @@ const handleVote = async () => {
                   </div>
                 )}
 
-                {poll.type === "rating" && (
+                {pollType === "rating" && (
                   <div>
                     <div className="mb-3 flex items-center gap-2">
                       <Sparkles className="h-3.5 w-3.5 text-[#FFD21F]" />
@@ -1070,13 +873,17 @@ const handleVote = async () => {
 
                     <div className="grid grid-cols-5 gap-2">
                       {poll.options?.map(
-                        (
-                          option,
-                          index
-                        ) => {
+                        (option, index) => {
+                          const optionId =
+                            String(
+                              option.id ??
+                                option._id ??
+                                ""
+                            );
+
                           const selected =
                             selectedOption ===
-                            option.id;
+                            optionId;
 
                           return (
                             <button
@@ -1087,7 +894,7 @@ const handleVote = async () => {
                               type="button"
                               onClick={() =>
                                 setSelectedOption(
-                                  option.id
+                                  optionId
                                 )
                               }
                               className={`flex h-12 items-center justify-center rounded-xl border text-sm font-black ${
@@ -1105,7 +912,7 @@ const handleVote = async () => {
                   </div>
                 )}
 
-                {poll.type === "image" && (
+                {pollType === "image" && (
                   <div>
                     <p className="mb-3 text-xs font-bold uppercase tracking-wider text-[#9CA3AF]">
                       Choose an image
@@ -1113,13 +920,17 @@ const handleVote = async () => {
 
                     <div className="grid grid-cols-2 gap-3">
                       {poll.options?.map(
-                        (
-                          option,
-                          index
-                        ) => {
+                        (option, index) => {
+                          const optionId =
+                            String(
+                              option.id ??
+                                option._id ??
+                                ""
+                            );
+
                           const selected =
                             selectedOption ===
-                            option.id;
+                            optionId;
 
                           const imageUrl =
                             option.image ||
@@ -1135,7 +946,7 @@ const handleVote = async () => {
                               type="button"
                               onClick={() =>
                                 setSelectedOption(
-                                  option.id
+                                  optionId
                                 )
                               }
                               className={`group relative overflow-hidden rounded-2xl border ${
@@ -1150,8 +961,7 @@ const handleVote = async () => {
                                   alt={
                                     option.text ||
                                     `Option ${
-                                      index +
-                                      1
+                                      index + 1
                                     }`
                                   }
                                   className="aspect-square w-full object-cover"
@@ -1181,7 +991,7 @@ const handleVote = async () => {
                   </div>
                 )}
 
-                {poll.type === "open" && (
+                {isOpenPoll && (
                   <div>
                     <label className="mb-2 block text-xs font-bold uppercase tracking-wider text-[#9CA3AF]">
                       Your Answer
@@ -1194,10 +1004,15 @@ const handleVote = async () => {
                           event.target.value
                         )
                       }
+                      maxLength={2000}
                       rows={5}
                       placeholder="Type your answer..."
                       className="w-full resize-none rounded-2xl border border-[#292929] bg-[#090909] p-4 text-sm leading-6 text-white outline-none placeholder:text-[#4B4B4B] focus:border-[#FFD21F]/60"
                     />
+
+                    <div className="mt-2 text-right text-[10px] text-[#4B4B4B]">
+                      {openAnswer.length}/2000
+                    </div>
                   </div>
                 )}
 
@@ -1207,16 +1022,20 @@ const handleVote = async () => {
                   "rating",
                   "image",
                   "open",
-                ].includes(poll.type) && (
+                ].includes(pollType) && (
                   <div className="space-y-3">
                     {poll.options?.map(
-                      (
-                        option,
-                        index
-                      ) => {
+                      (option, index) => {
+                        const optionId =
+                          String(
+                            option.id ??
+                              option._id ??
+                              ""
+                          );
+
                         const selected =
                           selectedOption ===
-                          option.id;
+                          optionId;
 
                         return (
                           <button
@@ -1227,7 +1046,7 @@ const handleVote = async () => {
                             type="button"
                             onClick={() =>
                               setSelectedOption(
-                                option.id
+                                optionId
                               )
                             }
                             className={`w-full rounded-2xl border p-4 text-left text-sm font-semibold ${
@@ -1256,12 +1075,16 @@ const handleVote = async () => {
                         size={17}
                         className="animate-spin"
                       />
-                      Submitting Vote...
+
+                      Submitting...
                     </>
                   ) : (
                     <>
                       <Send size={17} />
-                      Submit Vote
+
+                      {isOpenPoll
+                        ? "Submit Response"
+                        : "Submit Vote"}
                     </>
                   )}
                 </button>
@@ -1272,9 +1095,9 @@ const handleVote = async () => {
 
         <div className="mt-4 rounded-2xl border border-[#292929] bg-[#111111]/70 px-4 py-3 text-center">
           <p className="text-[10px] leading-5 text-[#6B7280]">
-            Your response is recorded in PULSE
-            and the results can update in real
-            time.
+            {isOpenPoll
+              ? "You can submit multiple responses to this open poll."
+              : "Your response is recorded in PULSE and the results can update in real time."}
           </p>
         </div>
       </div>

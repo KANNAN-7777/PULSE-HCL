@@ -16,8 +16,48 @@ import (
 
 	"pulse-backend/config"
 	"pulse-backend/models"
-	"pulse-backend/services"
 )
+
+type livePollUpdate struct {
+	PollID   string `json:"poll_id"`
+	OptionID string `json:"option_id"`
+	Votes    int    `json:"votes"`
+}
+
+func publishPollUpdate(
+	pollID string,
+	optionID string,
+	votes int,
+) error {
+	if config.RedisClient == nil {
+		return fmt.Errorf("redis client is not initialized")
+	}
+
+	data, err := json.Marshal(
+		livePollUpdate{
+			PollID:   pollID,
+			OptionID: optionID,
+			Votes:    votes,
+		},
+	)
+
+	if err != nil {
+		return err
+	}
+
+	channel := fmt.Sprintf(
+		"poll:%s",
+		pollID,
+	)
+
+	return config.RedisClient.
+		Publish(
+			context.Background(),
+			channel,
+			data,
+		).
+		Err()
+}
 
 func CreatePoll(c *gin.Context) {
 	userID := strings.TrimSpace(
@@ -105,14 +145,8 @@ func CreatePoll(c *gin.Context) {
 			[]byte(optionsJSON),
 			&optionTexts,
 		); err != nil {
-			fmt.Println(
-				"OPTIONS JSON ERROR:",
-				err,
-			)
-
 			c.JSON(http.StatusBadRequest, gin.H{
 				"message": "Invalid options",
-				"error":   err.Error(),
 			})
 			return
 		}
@@ -128,6 +162,13 @@ func CreatePoll(c *gin.Context) {
 
 		if text == "" {
 			continue
+		}
+
+		if len(text) > 200 {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"message": "Option cannot exceed 200 characters",
+			})
+			return
 		}
 
 		options = append(
@@ -157,31 +198,11 @@ func CreatePoll(c *gin.Context) {
 
 	if pollType == "rating" {
 		options = []models.PollOption{
-			{
-				ID:    "1",
-				Text:  "1",
-				Votes: 0,
-			},
-			{
-				ID:    "2",
-				Text:  "2",
-				Votes: 0,
-			},
-			{
-				ID:    "3",
-				Text:  "3",
-				Votes: 0,
-			},
-			{
-				ID:    "4",
-				Text:  "4",
-				Votes: 0,
-			},
-			{
-				ID:    "5",
-				Text:  "5",
-				Votes: 0,
-			},
+			{ID: "1", Text: "1", Votes: 0},
+			{ID: "2", Text: "2", Votes: 0},
+			{ID: "3", Text: "3", Votes: 0},
+			{ID: "4", Text: "4", Votes: 0},
+			{ID: "5", Text: "5", Votes: 0},
 		}
 	}
 
@@ -200,9 +221,7 @@ func CreatePoll(c *gin.Context) {
 			return
 		}
 
-		seen := make(
-			map[string]bool,
-		)
+		seen := make(map[string]bool)
 
 		for _, option := range options {
 			key := strings.ToLower(
@@ -262,11 +281,6 @@ func CreatePoll(c *gin.Context) {
 			uploadDir,
 			0755,
 		); err != nil {
-			fmt.Println(
-				"UPLOAD DIRECTORY ERROR:",
-				err,
-			)
-
 			c.JSON(http.StatusInternalServerError, gin.H{
 				"message": "Could not prepare image storage",
 			})
@@ -281,8 +295,8 @@ func CreatePoll(c *gin.Context) {
 				return
 			}
 
-			contentType := file.Header.Get(
-				"Content-Type",
+			contentType := strings.ToLower(
+				file.Header.Get("Content-Type"),
 			)
 
 			allowedImages := map[string]bool{
@@ -299,8 +313,8 @@ func CreatePoll(c *gin.Context) {
 				return
 			}
 
-			extension := filepath.Ext(
-				file.Filename,
+			extension := strings.ToLower(
+				filepath.Ext(file.Filename),
 			)
 
 			if extension == "" {
@@ -314,13 +328,12 @@ func CreatePoll(c *gin.Context) {
 				}
 			}
 
-			filename :=
-				fmt.Sprintf(
-					"%s_%d%s",
-					bson.NewObjectID().Hex(),
-					index,
-					extension,
-				)
+			filename := fmt.Sprintf(
+				"%s_%d%s",
+				bson.NewObjectID().Hex(),
+				index,
+				extension,
+			)
 
 			filePath := filepath.Join(
 				uploadDir,
@@ -331,19 +344,11 @@ func CreatePoll(c *gin.Context) {
 				file,
 				filePath,
 			); err != nil {
-				fmt.Println(
-					"SAVE IMAGE ERROR:",
-					err,
-				)
-
 				c.JSON(http.StatusInternalServerError, gin.H{
 					"message": "Could not save poll image",
 				})
 				return
 			}
-
-			imageURL :=
-				"/uploads/polls/" + filename
 
 			options = append(
 				options,
@@ -351,7 +356,7 @@ func CreatePoll(c *gin.Context) {
 					ID:    bson.NewObjectID().Hex(),
 					Text:  fmt.Sprintf("Image %d", index+1),
 					Votes: 0,
-					Image: imageURL,
+					Image: "/uploads/polls/" + filename,
 				},
 			)
 		}
@@ -367,9 +372,14 @@ func CreatePoll(c *gin.Context) {
 		CreatedAt: time.Now(),
 	}
 
-	collection := config.DB.Collection(
-		"polls",
-	)
+	if config.DB == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"message": "Database is not connected",
+		})
+		return
+	}
+
+	collection := config.DB.Collection("polls")
 
 	ctx, cancel := context.WithTimeout(
 		c.Request.Context(),
@@ -401,7 +411,9 @@ func CreatePoll(c *gin.Context) {
 }
 
 func GetMyPolls(c *gin.Context) {
-	userID := strings.TrimSpace(c.GetString("user_id"))
+	userID := strings.TrimSpace(
+		c.GetString("user_id"),
+	)
 
 	if userID == "" {
 		c.JSON(http.StatusUnauthorized, gin.H{
@@ -410,7 +422,12 @@ func GetMyPolls(c *gin.Context) {
 		return
 	}
 
-	collection := config.DB.Collection("polls")
+	if config.DB == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"message": "Database is not connected",
+		})
+		return
+	}
 
 	ctx, cancel := context.WithTimeout(
 		c.Request.Context(),
@@ -418,16 +435,16 @@ func GetMyPolls(c *gin.Context) {
 	)
 	defer cancel()
 
-	cursor, err := collection.Find(
-		ctx,
-		bson.M{
-			"created_by": userID,
-		},
-	)
+	cursor, err := config.DB.
+		Collection("polls").
+		Find(
+			ctx,
+			bson.M{
+				"created_by": userID,
+			},
+		)
 
 	if err != nil {
-		fmt.Println("GET MY POLLS ERROR:", err)
-
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"message": "Could not load polls",
 		})
@@ -438,9 +455,10 @@ func GetMyPolls(c *gin.Context) {
 
 	var polls []models.Poll
 
-	if err := cursor.All(ctx, &polls); err != nil {
-		fmt.Println("READ MY POLLS ERROR:", err)
-
+	if err := cursor.All(
+		ctx,
+		&polls,
+	); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"message": "Could not read polls",
 		})
@@ -451,13 +469,62 @@ func GetMyPolls(c *gin.Context) {
 		polls = []models.Poll{}
 	}
 
+	votesCollection := config.DB.Collection("votes")
+
+	result := make(
+		[]gin.H,
+		0,
+		len(polls),
+	)
+
+	for _, poll := range polls {
+		totalVotes := 0
+
+		if strings.EqualFold(
+			strings.TrimSpace(poll.Type),
+			"open",
+		) {
+			count, countErr := votesCollection.CountDocuments(
+				ctx,
+				bson.M{
+					"poll_id": poll.ID.Hex(),
+				},
+			)
+
+			if countErr == nil {
+				totalVotes = int(count)
+			}
+		} else {
+			for _, option := range poll.Options {
+				totalVotes += option.Votes
+			}
+		}
+
+		result = append(
+			result,
+			gin.H{
+				"id":            poll.ID,
+				"question":      poll.Question,
+				"type":          poll.Type,
+				"category":      poll.Category,
+				"options":       poll.Options,
+				"created_by":    poll.CreatedBy,
+				"created_at":    poll.CreatedAt,
+				"bookmarked_by": poll.BookmarkedBy,
+				"total_votes":   totalVotes,
+			},
+		)
+	}
+
 	c.JSON(http.StatusOK, gin.H{
-		"polls": polls,
+		"polls": result,
 	})
 }
 
 func GetVotedPolls(c *gin.Context) {
-	userID := strings.TrimSpace(c.GetString("user_id"))
+	userID := strings.TrimSpace(
+		c.GetString("user_id"),
+	)
 
 	if userID == "" {
 		c.JSON(http.StatusUnauthorized, gin.H{
@@ -466,16 +533,16 @@ func GetVotedPolls(c *gin.Context) {
 		return
 	}
 
-	voteCollection := config.DB.Collection("votes")
-	pollCollection := config.DB.Collection("polls")
-
 	ctx, cancel := context.WithTimeout(
 		c.Request.Context(),
 		10*time.Second,
 	)
 	defer cancel()
 
-	cursor, err := voteCollection.Find(
+	votesCollection := config.DB.Collection("votes")
+	pollsCollection := config.DB.Collection("polls")
+
+	cursor, err := votesCollection.Find(
 		ctx,
 		bson.M{
 			"user_id": userID,
@@ -483,10 +550,8 @@ func GetVotedPolls(c *gin.Context) {
 	)
 
 	if err != nil {
-		fmt.Println("GET VOTED POLLS ERROR:", err)
-
 		c.JSON(http.StatusInternalServerError, gin.H{
-			"message": "Could not load voted polls",
+			"message": "Failed to get voted polls",
 		})
 		return
 	}
@@ -495,17 +560,22 @@ func GetVotedPolls(c *gin.Context) {
 
 	var votes []models.Vote
 
-	if err := cursor.All(ctx, &votes); err != nil {
+	if err := cursor.All(
+		ctx,
+		&votes,
+	); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
-			"message": "Could not read votes",
+			"message": "Failed to read votes",
 		})
 		return
 	}
 
-	polls := make([]models.Poll, 0)
+	result := make([]gin.H, 0)
 
 	for _, vote := range votes {
-		pollID, err := bson.ObjectIDFromHex(vote.PollID)
+		pollObjectID, err := bson.ObjectIDFromHex(
+			vote.PollID,
+		)
 
 		if err != nil {
 			continue
@@ -513,10 +583,10 @@ func GetVotedPolls(c *gin.Context) {
 
 		var poll models.Poll
 
-		err = pollCollection.FindOne(
+		err = pollsCollection.FindOne(
 			ctx,
 			bson.M{
-				"_id": pollID,
+				"_id": pollObjectID,
 			},
 		).Decode(&poll)
 
@@ -524,16 +594,70 @@ func GetVotedPolls(c *gin.Context) {
 			continue
 		}
 
-		polls = append(polls, poll)
+		totalVotes := 0
+		selectedOption := ""
+
+		for _, option := range poll.Options {
+			totalVotes += option.Votes
+
+			if option.ID == vote.OptionID {
+				selectedOption = option.Text
+			}
+		}
+
+		if strings.EqualFold(
+			strings.TrimSpace(poll.Type),
+			"open",
+		) {
+			totalResponseCount, countErr :=
+				votesCollection.CountDocuments(
+					ctx,
+					bson.M{
+						"poll_id": vote.PollID,
+					},
+				)
+
+			if countErr == nil {
+				totalVotes = int(totalResponseCount)
+			}
+		}
+
+		selectedPercentage := 0
+
+		if totalVotes > 0 && vote.OptionID != "" {
+			for _, option := range poll.Options {
+				if option.ID == vote.OptionID {
+					selectedPercentage =
+						(option.Votes * 100) /
+							totalVotes
+					break
+				}
+			}
+		}
+
+		result = append(
+			result,
+			gin.H{
+				"poll":                poll,
+				"options":             poll.Options,
+				"total_votes":         totalVotes,
+				"selected_option":     selectedOption,
+				"selected_option_id":  vote.OptionID,
+				"selected_percentage": selectedPercentage,
+				"answer":              vote.Answer,
+			},
+		)
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"polls": polls,
+		"polls": result,
 	})
 }
 
 func GetBookmarkedPolls(c *gin.Context) {
-	userID := strings.TrimSpace(c.GetString("user_id"))
+	userID := strings.TrimSpace(
+		c.GetString("user_id"),
+	)
 
 	if userID == "" {
 		c.JSON(http.StatusUnauthorized, gin.H{
@@ -542,24 +666,24 @@ func GetBookmarkedPolls(c *gin.Context) {
 		return
 	}
 
-	collection := config.DB.Collection("polls")
-
 	ctx, cancel := context.WithTimeout(
 		c.Request.Context(),
 		10*time.Second,
 	)
 	defer cancel()
 
-	cursor, err := collection.Find(
-		ctx,
-		bson.M{
-			"bookmarked_by": userID,
-		},
-	)
+	cursor, err := config.DB.
+		Collection("polls").
+		Find(
+			ctx,
+			bson.M{
+				"bookmarked_by": userID,
+			},
+		)
 
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
-			"message": "Could not load bookmarked polls",
+			"message": "Failed to get bookmarked polls",
 		})
 		return
 	}
@@ -568,25 +692,62 @@ func GetBookmarkedPolls(c *gin.Context) {
 
 	var polls []models.Poll
 
-	if err := cursor.All(ctx, &polls); err != nil {
+	if err := cursor.All(
+		ctx,
+		&polls,
+	); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
-			"message": "Could not read bookmarked polls",
+			"message": "Failed to read bookmarked polls",
 		})
 		return
 	}
 
-	if polls == nil {
-		polls = []models.Poll{}
+	result := make([]gin.H, 0)
+
+	votesCollection := config.DB.Collection("votes")
+
+	for _, poll := range polls {
+		totalVotes := 0
+
+		if strings.EqualFold(
+			strings.TrimSpace(poll.Type),
+			"open",
+		) {
+			count, countErr := votesCollection.CountDocuments(
+				ctx,
+				bson.M{
+					"poll_id": poll.ID.Hex(),
+				},
+			)
+
+			if countErr == nil {
+				totalVotes = int(count)
+			}
+		} else {
+			for _, option := range poll.Options {
+				totalVotes += option.Votes
+			}
+		}
+
+		result = append(
+			result,
+			gin.H{
+				"poll":        poll,
+				"options":     poll.Options,
+				"total_votes": totalVotes,
+			},
+		)
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"polls": polls,
+		"polls": result,
 	})
 }
 
 func BookmarkPoll(c *gin.Context) {
-	userID := strings.TrimSpace(c.GetString("user_id"))
-	id := strings.TrimSpace(c.Param("id"))
+	userID := strings.TrimSpace(
+		c.GetString("user_id"),
+	)
 
 	if userID == "" {
 		c.JSON(http.StatusUnauthorized, gin.H{
@@ -594,6 +755,10 @@ func BookmarkPoll(c *gin.Context) {
 		})
 		return
 	}
+
+	id := strings.TrimSpace(
+		c.Param("id"),
+	)
 
 	pollID, err := bson.ObjectIDFromHex(id)
 
@@ -604,29 +769,27 @@ func BookmarkPoll(c *gin.Context) {
 		return
 	}
 
-	collection := config.DB.Collection("polls")
-
 	ctx, cancel := context.WithTimeout(
 		c.Request.Context(),
 		10*time.Second,
 	)
 	defer cancel()
 
-	result, err := collection.UpdateOne(
-		ctx,
-		bson.M{
-			"_id": pollID,
-		},
-		bson.M{
-			"$addToSet": bson.M{
-				"bookmarked_by": userID,
+	result, err := config.DB.
+		Collection("polls").
+		UpdateOne(
+			ctx,
+			bson.M{
+				"_id": pollID,
 			},
-		},
-	)
+			bson.M{
+				"$addToSet": bson.M{
+					"bookmarked_by": userID,
+				},
+			},
+		)
 
 	if err != nil {
-		fmt.Println("BOOKMARK ERROR:", err)
-
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"message": "Could not bookmark poll",
 		})
@@ -641,13 +804,15 @@ func BookmarkPoll(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"message": "Poll bookmarked successfully",
+		"message":    "Poll bookmarked successfully",
+		"bookmarked": true,
 	})
 }
 
 func RemoveBookmark(c *gin.Context) {
-	userID := strings.TrimSpace(c.GetString("user_id"))
-	id := strings.TrimSpace(c.Param("id"))
+	userID := strings.TrimSpace(
+		c.GetString("user_id"),
+	)
 
 	if userID == "" {
 		c.JSON(http.StatusUnauthorized, gin.H{
@@ -655,6 +820,10 @@ func RemoveBookmark(c *gin.Context) {
 		})
 		return
 	}
+
+	id := strings.TrimSpace(
+		c.Param("id"),
+	)
 
 	pollID, err := bson.ObjectIDFromHex(id)
 
@@ -665,25 +834,25 @@ func RemoveBookmark(c *gin.Context) {
 		return
 	}
 
-	collection := config.DB.Collection("polls")
-
 	ctx, cancel := context.WithTimeout(
 		c.Request.Context(),
 		10*time.Second,
 	)
 	defer cancel()
 
-	result, err := collection.UpdateOne(
-		ctx,
-		bson.M{
-			"_id": pollID,
-		},
-		bson.M{
-			"$pull": bson.M{
-				"bookmarked_by": userID,
+	result, err := config.DB.
+		Collection("polls").
+		UpdateOne(
+			ctx,
+			bson.M{
+				"_id": pollID,
 			},
-		},
-	)
+			bson.M{
+				"$pull": bson.M{
+					"bookmarked_by": userID,
+				},
+			},
+		)
 
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
@@ -700,13 +869,638 @@ func RemoveBookmark(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"message": "Bookmark removed successfully",
+		"message":    "Bookmark removed successfully",
+		"bookmarked": false,
 	})
 }
 
+/*
+========================================================
+VOTE POLL
+========================================================
+
+NORMAL POLLS
+- One response per user.
+- User can switch option.
+- Selecting the same option again does nothing.
+
+OPEN POLLS
+- Unlimited responses per user.
+- Every response creates a NEW vote document.
+- Every response stores its Answer.
+========================================================
+*/
+
 func VotePoll(c *gin.Context) {
-	id := strings.TrimSpace(c.Param("id"))
-	userID := strings.TrimSpace(c.GetString("user_id"))
+	id := strings.TrimSpace(
+		c.Param("id"),
+	)
+
+	if id == "" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"message": "Poll ID is required",
+		})
+		return
+	}
+
+	pollID, err := bson.ObjectIDFromHex(id)
+
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"message": "Invalid poll ID",
+		})
+		return
+	}
+
+	userID := strings.TrimSpace(
+		c.GetString("user_id"),
+	)
+
+	if userID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{
+			"message": "Please login to vote",
+		})
+		return
+	}
+
+	var request struct {
+		OptionID string `json:"option_id" form:"option_id"`
+		Value    string `json:"value" form:"value"`
+		Answer   string `json:"answer" form:"answer"`
+	}
+
+	if err := c.ShouldBind(&request); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"message": "Invalid vote request",
+		})
+		return
+	}
+
+	request.OptionID = strings.TrimSpace(
+		request.OptionID,
+	)
+
+	request.Answer = strings.TrimSpace(
+		request.Answer,
+	)
+
+	if config.DB == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"message": "Database is not connected",
+		})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(
+		c.Request.Context(),
+		10*time.Second,
+	)
+	defer cancel()
+
+	pollsCollection := config.DB.Collection("polls")
+	votesCollection := config.DB.Collection("votes")
+
+	var poll models.Poll
+
+	err = pollsCollection.
+		FindOne(
+			ctx,
+			bson.M{
+				"_id": pollID,
+			},
+		).
+		Decode(&poll)
+
+	if err != nil {
+		if err == mongo.ErrNoDocuments {
+			c.JSON(http.StatusNotFound, gin.H{
+				"message": "Poll not found",
+			})
+			return
+		}
+
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"message": "Unable to load poll",
+		})
+		return
+	}
+
+	// ==================================================
+	// OPEN POLL
+	// ==================================================
+	//
+	// IMPORTANT:
+	//
+	// We DO NOT search for an existing vote here.
+	//
+	// Every submission creates a NEW Vote document.
+	//
+	// This allows:
+	//
+	// Response 1
+	// Response 2
+	// Response 3
+	// ...
+	//
+	// from the same user.
+	// ==================================================
+
+	if strings.EqualFold(
+		strings.TrimSpace(poll.Type),
+		"open",
+	) {
+		if request.Answer == "" {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"message": "Please enter your response",
+			})
+			return
+		}
+
+		if len(request.Answer) > 2000 {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"message": "Response cannot exceed 2000 characters",
+			})
+			return
+		}
+
+		newResponse := models.Vote{
+			ID:       bson.NewObjectID(),
+			PollID:   id,
+			UserID:   userID,
+			OptionID: "",
+			Answer:   request.Answer,
+			VotedAt:  time.Now(),
+		}
+
+		_, err = votesCollection.InsertOne(
+			ctx,
+			newResponse,
+		)
+
+		if err != nil {
+			fmt.Println(
+				"OPEN POLL RESPONSE ERROR:",
+				err,
+			)
+
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"message": "Unable to record response",
+			})
+			return
+		}
+
+		totalResponses, err :=
+			votesCollection.CountDocuments(
+				ctx,
+				bson.M{
+					"poll_id": id,
+				},
+			)
+
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"message": "Response saved but count could not be loaded",
+			})
+			return
+		}
+
+		c.JSON(http.StatusOK, gin.H{
+			"message":         "Response recorded successfully",
+			"changed":         true,
+			"realtime":        false,
+			"total_responses": totalResponses,
+			"total_votes":     totalResponses,
+			"response_id":     newResponse.ID.Hex(),
+			"poll":            poll,
+		})
+
+		return
+	}
+
+	// ==================================================
+	// NORMAL POLL
+	// ==================================================
+
+	if request.OptionID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"message": "Please select an option",
+		})
+		return
+	}
+
+	optionExists := false
+
+	for _, option := range poll.Options {
+		if strings.TrimSpace(option.ID) ==
+			request.OptionID {
+
+			optionExists = true
+			break
+		}
+	}
+
+	if !optionExists {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"message": "Selected option does not exist",
+		})
+		return
+	}
+
+	var existingVote models.Vote
+
+	findVoteErr := votesCollection.
+		FindOne(
+			ctx,
+			bson.M{
+				"poll_id": id,
+				"user_id": userID,
+			},
+		).
+		Decode(&existingVote)
+
+	hasExistingVote := findVoteErr == nil
+
+	if findVoteErr != nil &&
+		findVoteErr != mongo.ErrNoDocuments {
+
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"message": "Unable to check previous vote",
+		})
+		return
+	}
+
+	// ==================================================
+	// SAME OPTION
+	// ==================================================
+
+	if hasExistingVote &&
+		existingVote.OptionID == request.OptionID {
+
+		var currentPoll models.Poll
+
+		err = pollsCollection.
+			FindOne(
+				ctx,
+				bson.M{
+					"_id": pollID,
+				},
+			).
+			Decode(&currentPoll)
+
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"message": "Unable to load current poll",
+			})
+			return
+		}
+
+		currentVotes := 0
+		totalVotes := 0
+
+		for _, option := range currentPoll.Options {
+			totalVotes += option.Votes
+
+			if option.ID == request.OptionID {
+				currentVotes = option.Votes
+			}
+		}
+
+		c.JSON(http.StatusOK, gin.H{
+			"message":            "Vote already selected",
+			"votes":              currentVotes,
+			"total_votes":        totalVotes,
+			"changed":            false,
+			"poll":               currentPoll,
+			"realtime":           false,
+			"selected_option_id": request.OptionID,
+		})
+
+		return
+	}
+
+	// ==================================================
+	// FIRST NORMAL VOTE
+	// ==================================================
+
+	if !hasExistingVote {
+		updateResult, err := pollsCollection.
+			UpdateOne(
+				ctx,
+				bson.M{
+					"_id": pollID,
+					"options": bson.M{
+						"$elemMatch": bson.M{
+							"id": request.OptionID,
+							"votes": bson.M{
+								"$gte": 0,
+							},
+						},
+					},
+				},
+				bson.M{
+					"$inc": bson.M{
+						"options.$.votes": 1,
+					},
+				},
+			)
+
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"message": "Unable to update vote count",
+			})
+			return
+		}
+
+		if updateResult.MatchedCount == 0 ||
+			updateResult.ModifiedCount == 0 {
+
+			c.JSON(http.StatusBadRequest, gin.H{
+				"message": "Selected option could not be updated",
+			})
+			return
+		}
+
+		vote := models.Vote{
+			ID:       bson.NewObjectID(),
+			PollID:   id,
+			UserID:   userID,
+			OptionID: request.OptionID,
+			VotedAt:  time.Now(),
+		}
+
+		_, err = votesCollection.InsertOne(
+			ctx,
+			vote,
+		)
+
+		if err != nil {
+			_, _ = pollsCollection.UpdateOne(
+				ctx,
+				bson.M{
+					"_id": pollID,
+					"options": bson.M{
+						"$elemMatch": bson.M{
+							"id": request.OptionID,
+							"votes": bson.M{
+								"$gt": 0,
+							},
+						},
+					},
+				},
+				bson.M{
+					"$inc": bson.M{
+						"options.$.votes": -1,
+					},
+				},
+			)
+
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"message": "Unable to save vote",
+			})
+			return
+		}
+	} else {
+
+		// ==================================================
+		// SWITCH NORMAL VOTE
+		// ==================================================
+
+		oldOptionID := strings.TrimSpace(
+			existingVote.OptionID,
+		)
+
+		if oldOptionID == "" {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"message": "Invalid previous vote",
+			})
+			return
+		}
+
+		oldUpdateResult, err := pollsCollection.
+			UpdateOne(
+				ctx,
+				bson.M{
+					"_id": pollID,
+					"options": bson.M{
+						"$elemMatch": bson.M{
+							"id": oldOptionID,
+							"votes": bson.M{
+								"$gt": 0,
+							},
+						},
+					},
+				},
+				bson.M{
+					"$inc": bson.M{
+						"options.$.votes": -1,
+					},
+				},
+			)
+
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"message": "Unable to remove previous vote",
+			})
+			return
+		}
+
+		if oldUpdateResult.MatchedCount == 0 ||
+			oldUpdateResult.ModifiedCount == 0 {
+
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"message": "Previous option count could not be updated",
+			})
+			return
+		}
+
+		newUpdateResult, err := pollsCollection.
+			UpdateOne(
+				ctx,
+				bson.M{
+					"_id": pollID,
+					"options": bson.M{
+						"$elemMatch": bson.M{
+							"id": request.OptionID,
+							"votes": bson.M{
+								"$gte": 0,
+							},
+						},
+					},
+				},
+				bson.M{
+					"$inc": bson.M{
+						"options.$.votes": 1,
+					},
+				},
+			)
+
+		if err != nil {
+			_, _ = pollsCollection.UpdateOne(
+				ctx,
+				bson.M{
+					"_id": pollID,
+					"options": bson.M{
+						"$elemMatch": bson.M{
+							"id": oldOptionID,
+						},
+					},
+				},
+				bson.M{
+					"$inc": bson.M{
+						"options.$.votes": 1,
+					},
+				},
+			)
+
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"message": "Unable to add new vote",
+			})
+			return
+		}
+
+		if newUpdateResult.MatchedCount == 0 ||
+			newUpdateResult.ModifiedCount == 0 {
+
+			_, _ = pollsCollection.UpdateOne(
+				ctx,
+				bson.M{
+					"_id": pollID,
+					"options": bson.M{
+						"$elemMatch": bson.M{
+							"id": oldOptionID,
+						},
+					},
+				},
+				bson.M{
+					"$inc": bson.M{
+						"options.$.votes": 1,
+					},
+				},
+			)
+
+			c.JSON(http.StatusBadRequest, gin.H{
+				"message": "New option could not be updated",
+			})
+			return
+		}
+
+		_, err = votesCollection.UpdateOne(
+			ctx,
+			bson.M{
+				"_id": existingVote.ID,
+			},
+			bson.M{
+				"$set": bson.M{
+					"option_id": request.OptionID,
+					"voted_at":  time.Now(),
+				},
+			},
+		)
+
+		if err != nil {
+			_, _ = pollsCollection.UpdateOne(
+				ctx,
+				bson.M{
+					"_id": pollID,
+					"options": bson.M{
+						"$elemMatch": bson.M{
+							"id": request.OptionID,
+						},
+					},
+				},
+				bson.M{
+					"$inc": bson.M{
+						"options.$.votes": -1,
+					},
+				},
+			)
+
+			_, _ = pollsCollection.UpdateOne(
+				ctx,
+				bson.M{
+					"_id": pollID,
+					"options": bson.M{
+						"$elemMatch": bson.M{
+							"id": oldOptionID,
+						},
+					},
+				},
+				bson.M{
+					"$inc": bson.M{
+						"options.$.votes": 1,
+					},
+				},
+			)
+
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"message": "Unable to update vote",
+			})
+			return
+		}
+	}
+
+	// ==================================================
+	// LOAD UPDATED NORMAL POLL
+	// ==================================================
+
+	var updatedPoll models.Poll
+
+	err = pollsCollection.
+		FindOne(
+			ctx,
+			bson.M{
+				"_id": pollID,
+			},
+		).
+		Decode(&updatedPoll)
+
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"message": "Vote saved but unable to load updated poll",
+		})
+		return
+	}
+
+	updatedVotes := 0
+	totalVotes := 0
+
+	for _, option := range updatedPoll.Options {
+		totalVotes += option.Votes
+
+		if option.ID == request.OptionID {
+			updatedVotes = option.Votes
+		}
+	}
+
+	realtime := false
+
+	if err := publishPollUpdate(
+		id,
+		request.OptionID,
+		updatedVotes,
+	); err == nil {
+		realtime = true
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message":            "Vote updated successfully",
+		"votes":              updatedVotes,
+		"total_votes":        totalVotes,
+		"poll":               updatedPoll,
+		"realtime":           realtime,
+		"changed":            true,
+		"selected_option_id": request.OptionID,
+	})
+}
+
+func UnvotePoll(c *gin.Context) {
+	id := strings.TrimSpace(
+		c.Param("id"),
+	)
+
+	userID := strings.TrimSpace(
+		c.GetString("user_id"),
+	)
 
 	if userID == "" {
 		c.JSON(http.StatusUnauthorized, gin.H{
@@ -724,241 +1518,185 @@ func VotePoll(c *gin.Context) {
 		return
 	}
 
-	var request struct {
-		OptionID string `json:"option_id"`
-		Value    string `json:"value"`
-		Answer   string `json:"answer"`
-	}
-
-	if err := c.ShouldBindJSON(&request); err != nil {
-		fmt.Println("INVALID VOTE REQUEST:", err)
-
-		c.JSON(http.StatusBadRequest, gin.H{
-			"message": "Invalid vote request",
-		})
-		return
-	}
-
-	fmt.Println("VOTE REQUEST")
-	fmt.Println("Poll ID:", id)
-	fmt.Println("User ID:", userID)
-	fmt.Println("Option ID:", request.OptionID)
-	fmt.Println("Value:", request.Value)
-	fmt.Println("Answer:", request.Answer)
-
-	collection := config.DB.Collection("polls")
-	voteCollection := config.DB.Collection("votes")
-
 	ctx, cancel := context.WithTimeout(
 		c.Request.Context(),
 		10*time.Second,
 	)
 	defer cancel()
 
-	var poll models.Poll
-
-	err = collection.FindOne(
-		ctx,
-		bson.M{
-			"_id": pollID,
-		},
-	).Decode(&poll)
-
-	if err != nil {
-		fmt.Println("FIND POLL ERROR:", err)
-
-		if err == mongo.ErrNoDocuments {
-			c.JSON(http.StatusNotFound, gin.H{
-				"message": "Poll not found",
-			})
-			return
-		}
-
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"message": "Could not load poll",
-			"error":   err.Error(),
-		})
-		return
-	}
+	pollsCollection := config.DB.Collection("polls")
+	votesCollection := config.DB.Collection("votes")
 
 	var existingVote models.Vote
 
-	err = voteCollection.FindOne(
-		ctx,
-		bson.M{
-			"poll_id": id,
-			"user_id": userID,
-		},
-	).Decode(&existingVote)
-
-	if err == nil {
-		c.JSON(http.StatusConflict, gin.H{
-			"message": "You have already voted in this poll",
-		})
-		return
-	}
-
-	if err != mongo.ErrNoDocuments {
-		fmt.Println("CHECK EXISTING VOTE ERROR:", err)
-
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"message": "Could not verify previous vote",
-			"error":   err.Error(),
-		})
-		return
-	}
-
-	optionID := strings.TrimSpace(request.OptionID)
-
-	if optionID == "" {
-		optionID = strings.TrimSpace(request.Value)
-	}
-
-	if poll.Type == "open" {
-		if optionID == "" {
-			optionID = strings.TrimSpace(request.Answer)
-		}
-
-		if optionID == "" {
-			c.JSON(http.StatusBadRequest, gin.H{
-				"message": "Answer is required",
-			})
-			return
-		}
-	}
-
-	if poll.Type != "open" && optionID == "" {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"message": "Option is required",
-		})
-		return
-	}
-
-	if poll.Type != "open" {
-		found := false
-
-		for _, option := range poll.Options {
-			if strings.TrimSpace(option.ID) == optionID {
-				found = true
-				break
-			}
-		}
-
-		if !found {
-			fmt.Println("INVALID OPTION:", optionID)
-
-			c.JSON(http.StatusBadRequest, gin.H{
-				"message": "Invalid option",
-			})
-			return
-		}
-	}
-
-	vote := models.Vote{
-		PollID:   id,
-		OptionID: optionID,
-		UserID:   userID,
-		VotedAt:  time.Now(),
-	}
-
-	_, err = voteCollection.InsertOne(
-		ctx,
-		vote,
-	)
-
-	if err != nil {
-		fmt.Println("INSERT VOTE ERROR:", err)
-
-		if mongo.IsDuplicateKeyError(err) {
-			c.JSON(http.StatusConflict, gin.H{
-				"message": "You have already voted in this poll",
-			})
-			return
-		}
-
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"message": "Could not save vote",
-			"error":   err.Error(),
-		})
-		return
-	}
-
-	if poll.Type == "open" {
-		c.JSON(http.StatusOK, gin.H{
-			"message": "Response recorded successfully",
-		})
-		return
-	}
-
-	updateResult, err := collection.UpdateOne(
-		ctx,
-		bson.M{
-			"_id":        pollID,
-			"options.id": optionID,
-		},
-		bson.M{
-			"$inc": bson.M{
-				"options.$.votes": 1,
+	err = votesCollection.
+		FindOne(
+			ctx,
+			bson.M{
+				"poll_id": id,
+				"user_id": userID,
 			},
+		).
+		Decode(&existingVote)
+
+	if err != nil {
+		if err == mongo.ErrNoDocuments {
+			c.JSON(http.StatusOK, gin.H{
+				"message": "No vote to remove",
+				"changed": false,
+			})
+			return
+		}
+
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"message": "Unable to find vote",
+		})
+		return
+	}
+
+	// Open poll responses do not have option counts.
+	if existingVote.OptionID == "" {
+		_, err = votesCollection.DeleteOne(
+			ctx,
+			bson.M{
+				"_id": existingVote.ID,
+			},
+		)
+
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"message": "Unable to remove response",
+			})
+			return
+		}
+
+		c.JSON(http.StatusOK, gin.H{
+			"message": "Response removed successfully",
+			"changed": true,
+		})
+		return
+	}
+
+	updateResult, err := pollsCollection.
+		UpdateOne(
+			ctx,
+			bson.M{
+				"_id": pollID,
+				"options": bson.M{
+					"$elemMatch": bson.M{
+						"id": existingVote.OptionID,
+						"votes": bson.M{
+							"$gt": 0,
+						},
+					},
+				},
+			},
+			bson.M{
+				"$inc": bson.M{
+					"options.$.votes": -1,
+				},
+			},
+		)
+
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"message": "Unable to decrease vote count",
+		})
+		return
+	}
+
+	if updateResult.MatchedCount == 0 ||
+		updateResult.ModifiedCount == 0 {
+
+		c.JSON(http.StatusBadRequest, gin.H{
+			"message": "Vote count could not be updated",
+		})
+		return
+	}
+
+	_, err = votesCollection.DeleteOne(
+		ctx,
+		bson.M{
+			"_id": existingVote.ID,
 		},
 	)
 
 	if err != nil {
-		fmt.Println("UPDATE POLL COUNT ERROR:", err)
-
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"message": "Vote was saved but vote count could not be updated",
-			"error":   err.Error(),
-		})
-		return
-	}
-
-	if updateResult.ModifiedCount == 0 {
-		fmt.Println(
-			"VOTE COUNT WAS NOT UPDATED",
-			"option:",
-			optionID,
+		_, _ = pollsCollection.UpdateOne(
+			ctx,
+			bson.M{
+				"_id": pollID,
+				"options": bson.M{
+					"$elemMatch": bson.M{
+						"id": existingVote.OptionID,
+					},
+				},
+			},
+			bson.M{
+				"$inc": bson.M{
+					"options.$.votes": 1,
+				},
+			},
 		)
 
 		c.JSON(http.StatusInternalServerError, gin.H{
-			"message": "Vote was saved but selected option could not be updated",
+			"message": "Unable to remove vote",
 		})
 		return
 	}
 
-	votes, redisErr := services.IncrementVote(
+	var updatedPoll models.Poll
+
+	err = pollsCollection.
+		FindOne(
+			ctx,
+			bson.M{
+				"_id": pollID,
+			},
+		).
+		Decode(&updatedPoll)
+
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"message": "Vote removed but failed to load poll",
+		})
+		return
+	}
+
+	totalVotes := 0
+	selectedVotes := 0
+
+	for _, option := range updatedPoll.Options {
+		totalVotes += option.Votes
+
+		if option.ID == existingVote.OptionID {
+			selectedVotes = option.Votes
+		}
+	}
+
+	realtime := false
+
+	if err := publishPollUpdate(
 		id,
-		optionID,
-	)
-
-	if redisErr != nil {
-		fmt.Println(
-			"REDIS REALTIME UPDATE FAILED:",
-			redisErr,
-		)
-
-		c.JSON(http.StatusOK, gin.H{
-			"message":  "Vote recorded successfully",
-			"realtime": false,
-		})
-		return
+		existingVote.OptionID,
+		selectedVotes,
+	); err == nil {
+		realtime = true
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"message":  "Vote recorded successfully",
-		"votes":    votes,
-		"realtime": true,
-	})
-}
-
-func UnvotePoll(c *gin.Context) {
-	c.JSON(http.StatusNotImplemented, gin.H{
-		"message": "Unvote is not implemented yet",
+		"message":     "Vote removed successfully",
+		"changed":     true,
+		"total_votes": totalVotes,
+		"poll":        updatedPoll,
+		"realtime":    realtime,
 	})
 }
 
 func GetPoll(c *gin.Context) {
-	id := strings.TrimSpace(c.Param("id"))
+	id := strings.TrimSpace(
+		c.Param("id"),
+	)
 
 	pollID, err := bson.ObjectIDFromHex(id)
 
@@ -969,7 +1707,9 @@ func GetPoll(c *gin.Context) {
 		return
 	}
 
-	collection := config.DB.Collection("polls")
+	userID := strings.TrimSpace(
+		c.GetString("user_id"),
+	)
 
 	ctx, cancel := context.WithTimeout(
 		c.Request.Context(),
@@ -979,12 +1719,15 @@ func GetPoll(c *gin.Context) {
 
 	var poll models.Poll
 
-	err = collection.FindOne(
-		ctx,
-		bson.M{
-			"_id": pollID,
-		},
-	).Decode(&poll)
+	err = config.DB.
+		Collection("polls").
+		FindOne(
+			ctx,
+			bson.M{
+				"_id": pollID,
+			},
+		).
+		Decode(&poll)
 
 	if err != nil {
 		if err == mongo.ErrNoDocuments {
@@ -994,21 +1737,95 @@ func GetPoll(c *gin.Context) {
 			return
 		}
 
-		fmt.Println("GET POLL ERROR:", err)
-
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"message": "Could not load poll",
 		})
 		return
 	}
 
+	isOpenPoll := strings.EqualFold(
+		strings.TrimSpace(poll.Type),
+		"open",
+	)
+
+	/*
+		For normal polls:
+		has_voted = whether the user already selected an option.
+
+		For open polls:
+		has_voted is ALWAYS false because the user
+		can submit multiple responses.
+	*/
+
+	hasVoted := false
+	selectedOptionID := ""
+
+	if userID != "" && !isOpenPoll {
+		var existingVote models.Vote
+
+		err = config.DB.
+			Collection("votes").
+			FindOne(
+				ctx,
+				bson.M{
+					"poll_id": id,
+					"user_id": userID,
+				},
+			).
+			Decode(&existingVote)
+
+		if err == nil {
+			hasVoted = true
+			selectedOptionID = existingVote.OptionID
+		} else if err != mongo.ErrNoDocuments {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"message": "Could not check vote status",
+			})
+			return
+		}
+	}
+
+	totalVotes := 0
+
+	if isOpenPoll {
+		count, countErr :=
+			config.DB.
+				Collection("votes").
+				CountDocuments(
+					ctx,
+					bson.M{
+						"poll_id": id,
+					},
+				)
+
+		if countErr != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"message": "Could not count responses",
+			})
+			return
+		}
+
+		totalVotes = int(count)
+	} else {
+		for _, option := range poll.Options {
+			totalVotes += option.Votes
+		}
+	}
+
 	c.JSON(http.StatusOK, gin.H{
-		"poll": poll,
+		"poll":               poll,
+		"has_voted":          hasVoted,
+		"selected_option_id": selectedOptionID,
+		"total_votes":        totalVotes,
+		"total_responses":    totalVotes,
+		"is_open":            isOpenPoll,
 	})
 }
 
 func GetPollVoters(c *gin.Context) {
-	id := strings.TrimSpace(c.Param("id"))
+	id := strings.TrimSpace(
+		c.Param("id"),
+	)
 
 	if _, err := bson.ObjectIDFromHex(id); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{
@@ -1017,20 +1834,20 @@ func GetPollVoters(c *gin.Context) {
 		return
 	}
 
-	voteCollection := config.DB.Collection("votes")
-
 	ctx, cancel := context.WithTimeout(
 		c.Request.Context(),
 		10*time.Second,
 	)
 	defer cancel()
 
-	cursor, err := voteCollection.Find(
-		ctx,
-		bson.M{
-			"poll_id": id,
-		},
-	)
+	cursor, err := config.DB.
+		Collection("votes").
+		Find(
+			ctx,
+			bson.M{
+				"poll_id": id,
+			},
+		)
 
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
@@ -1043,7 +1860,10 @@ func GetPollVoters(c *gin.Context) {
 
 	var votes []models.Vote
 
-	if err := cursor.All(ctx, &votes); err != nil {
+	if err := cursor.All(
+		ctx,
+		&votes,
+	); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"message": "Could not read voters",
 		})

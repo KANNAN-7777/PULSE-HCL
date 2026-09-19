@@ -1,9 +1,9 @@
+
 package main
 
 import (
 	"log"
 	"net/http"
-	"os"
 
 	"github.com/gin-gonic/gin"
 	"github.com/joho/godotenv"
@@ -12,14 +12,15 @@ import (
 	"pulse-backend/routes"
 )
 
-
 func corsMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		origin := c.GetHeader("Origin")
 
 		allowedOrigins := map[string]bool{
-			"http://localhost:5173":       true,
-			"http://localhost:5174":       true,
+			"http://localhost:5173":        true,
+			"http://localhost:5174":        true,
+			"http://localhost:5175":        true,
+			"http://localhost:3000":        true,
 			"https://pulse-hcl.vercel.app": true,
 		}
 
@@ -43,9 +44,14 @@ func corsMiddleware() gin.HandlerFunc {
 				"Access-Control-Allow-Methods",
 				"GET, POST, PUT, PATCH, DELETE, OPTIONS",
 			)
+
+			c.Header(
+				"Access-Control-Max-Age",
+				"86400",
+			)
 		}
 
-		if c.Request.Method == "OPTIONS" {
+		if c.Request.Method == http.MethodOptions {
 			c.AbortWithStatus(http.StatusNoContent)
 			return
 		}
@@ -54,47 +60,36 @@ func corsMiddleware() gin.HandlerFunc {
 	}
 }
 
-
-
 func main() {
+	// Load environment variables
 	if err := godotenv.Load(); err != nil {
 		log.Println(".env file not found")
 	}
 
-	if err := config.ConnectMongoDB(); err != nil {
-		log.Fatal(err)
+	// Connect MongoDB
+	if err := config.ConnectDatabase(); err != nil {
+		log.Fatal("MongoDB connection failed:", err)
 	}
+
+	// Connect Redis
+	config.ConnectRedis()
 
 	router := gin.Default()
 
+	// CORS must run before the routes.
 	router.Use(corsMiddleware())
 
-	router.Static(
-		"/uploads",
-		"./uploads",
-	)
-
-	router.GET("/", func(c *gin.Context) {
-		c.JSON(http.StatusOK, gin.H{
-			"message": "PULSE backend is running",
-		})
-	})
-
+	// Authentication routes.
 	routes.AuthRoutes(router)
+
+	// Poll routes.
 	routes.PollRoutes(router)
 
-	port := os.Getenv("PORT")
-
-	if port == "" {
-		port = "8080"
-	}
-
 	log.Println(
-		"PULSE backend running on port",
-		port,
+		"PULSE backend running on http://localhost:8080",
 	)
 
-	if err := router.Run(":" + port); err != nil {
+	if err := router.Run(":8080"); err != nil {
 		log.Fatal(err)
 	}
 }

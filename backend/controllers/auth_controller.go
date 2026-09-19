@@ -3,12 +3,12 @@ package controllers
 import (
 	"context"
 	"crypto/rand"
-	"errors"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"net/http"
 	"net/mail"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -16,28 +16,49 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
-	"go.mongodb.org/mongo-driver/v2/mongo/options"
 	"golang.org/x/crypto/bcrypt"
 
 	"pulse-backend/config"
 	"pulse-backend/models"
 )
 
-const registrationOTPExpiry = 10 * time.Minute
+const (
+	registrationOTPExpiry = 10 * time.Minute
+	maxOTPAttempts        = 5
+	otpLength             = 6
+)
 
-func generateRegistrationOTP() (string, error) {
+type RegistrationOTP struct {
+	ID             bson.ObjectID `bson:"_id,omitempty"`
+	Name           string        `bson:"name"`
+	Username       string        `bson:"username"`
+	Email          string        `bson:"email"`
+	Password       string        `bson:"password"`
+	OTPHash        string        `bson:"otp_hash"`
+	CreatedAt      time.Time     `bson:"created_at"`
+	ExpiresAt      time.Time     `bson:"expires_at"`
+	Attempts       int           `bson:"attempts"`
+	ProfilePicture string        `bson:"profile_picture"`
+}
+
+func generateOTP() (string, error) {
 	buffer := make([]byte, 4)
 
 	if _, err := rand.Read(buffer); err != nil {
 		return "", err
 	}
 
-	number := uint32(buffer[0])<<24 |
+	number := (uint32(buffer[0])<<24 |
 		uint32(buffer[1])<<16 |
 		uint32(buffer[2])<<8 |
-		uint32(buffer[3])
+		uint32(buffer[3])) % 1000000
 
-	return fmt.Sprintf("%06d", number%1000000), nil
+	return fmt.Sprintf("%06d", number), nil
+}
+
+func hashOTP(otp string) string {
+	hash := sha256.Sum256([]byte(otp))
+	return hex.EncodeToString(hash[:])
 }
 
 func validateEmail(email string) bool {
@@ -48,6 +69,7 @@ func validateEmail(email string) bool {
 	}
 
 	parsed, err := mail.ParseAddress(email)
+
 	if err != nil {
 		return false
 	}
@@ -55,65 +77,63 @@ func validateEmail(email string) bool {
 	return strings.EqualFold(parsed.Address, email)
 }
 
-func profileUploadDirectory() string {
-	return filepath.Join(".", "uploads", "profiles")
-}
-
-func ensureUserIndexes() {
-	if config.DB == nil {
-		return
+func validateUsername(username string) bool {
+	if len(username) < 3 || len(username) > 30 {
+		return false
 	}
 
-	ctx, cancel := context.WithTimeout(
-		context.Background(),
-		10*time.Second,
-	)
-	defer cancel()
+	for _, character := range username {
+		valid :=
+			(character >= 'a' && character <= 'z') ||
+				(character >= 'A' && character <= 'Z') ||
+				(character >= '0' && character <= '9') ||
+				character == '_' ||
+				character == '.'
 
-	usersCollection := config.DB.Collection("users")
+		if !valid {
+			return false
+		}
+	}
 
-	_, _ = usersCollection.Indexes().CreateMany(
-		ctx,
-		[]mongo.IndexModel{
-			{
-				Keys: bson.D{
-					{
-						Key:   "email",
-						Value: 1,
-					},
-				},
-				Options: options.Index().SetUnique(true),
-			},
-			{
-				Keys: bson.D{
-					{
-						Key:   "username",
-						Value: 1,
-					},
-				},
-				Options: options.Index().SetUnique(true),
-			},
-		},
-	)
+	return true
 }
 
-func InitializeAuthIndexes() {
-	ensureUserIndexes()
+func userResponse(user models.User) gin.H {
+	return gin.H{
+		"id":              user.ID.Hex(),
+		"name":            user.Name,
+		"username":        user.Username,
+		"email":           user.Email,
+		"role":            user.Role,
+		"profile_picture": user.ProfilePicture,
+	}
 }
 
-// ============================================================
-// REGISTER
-// ============================================================
+/*
+=====================================================
+REGISTER
+=====================================================
+POST /api/auth/register
 
+This does NOT create the real user.
+
+It:
+1. Validates registration details.
+2. Checks email/username.
+3. Hashes password.
+4. Generates OTP.
+5. Stores temporary registration.
+6. Returns OTP for the current demo flow.
+*/
 func Register(c *gin.Context) {
-	var input struct {
+	var request struct {
 		Name     string `json:"name" form:"name"`
 		Username string `json:"username" form:"username"`
 		Email    string `json:"email" form:"email"`
 		Password string `json:"password" form:"password"`
 	}
 
-	if err := c.ShouldBind(&input); err != nil {
+	if err := c.ShouldBind(&request); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"success": false,
 			"message": "Invalid registration request",
@@ -121,11 +141,16 @@ func Register(c *gin.Context) {
 		return
 	}
 
-	input.Name = strings.TrimSpace(input.Name)
-	input.Username = strings.TrimSpace(input.Username)
-	input.Email = strings.ToLower(strings.TrimSpace(input.Email))
+	request.Name = strings.TrimSpace(request.Name)
+	request.Username = strings.TrimSpace(request.Username)
+	request.Email = strings.ToLower(
+		strings.TrimSpace(request.Email),
+	)
 
-	if input.Name == "" || input.Username == "" || input.Email == "" || input.Password == "" {
+	if request.Name == "" ||
+		request.Username == "" ||
+		request.Email == "" ||
+		request.Password == "" {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"success": false,
 			"message": "All registration fields are required",
@@ -133,7 +158,7 @@ func Register(c *gin.Context) {
 		return
 	}
 
-	if len(input.Name) < 2 || len(input.Name) > 80 {
+	if len(request.Name) < 2 || len(request.Name) > 80 {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"success": false,
 			"message": "Name must contain 2 to 80 characters",
@@ -141,32 +166,15 @@ func Register(c *gin.Context) {
 		return
 	}
 
-	if len(input.Username) < 3 || len(input.Username) > 30 {
+	if !validateUsername(request.Username) {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"success": false,
-			"message": "Username must contain 3 to 30 characters",
+			"message": "Username must contain 3 to 30 characters and only letters, numbers, _ or .",
 		})
 		return
 	}
 
-	for _, character := range input.Username {
-		validCharacter :=
-			(character >= 'a' && character <= 'z') ||
-				(character >= 'A' && character <= 'Z') ||
-				(character >= '0' && character <= '9') ||
-				character == '_' ||
-				character == '.'
-
-		if !validCharacter {
-			c.JSON(http.StatusBadRequest, gin.H{
-				"success": false,
-				"message": "Username contains invalid characters",
-			})
-			return
-		}
-	}
-
-	if !validateEmail(input.Email) {
+	if !validateEmail(request.Email) {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"success": false,
 			"message": "Please enter a valid email address",
@@ -174,7 +182,7 @@ func Register(c *gin.Context) {
 		return
 	}
 
-	if len(input.Password) < 6 || len(input.Password) > 72 {
+	if len(request.Password) < 6 || len(request.Password) > 72 {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"success": false,
 			"message": "Password must contain 6 to 72 characters",
@@ -191,123 +199,190 @@ func Register(c *gin.Context) {
 	}
 
 	ctx, cancel := context.WithTimeout(
-		c.Request.Context(),
+		context.Background(),
 		10*time.Second,
 	)
 	defer cancel()
 
 	usersCollection := config.DB.Collection("users")
+	registrationCollection := config.DB.Collection("registration_otps")
 
+	/*
+		Check existing email.
+	*/
 	var existingUser models.User
 
 	err := usersCollection.FindOne(
 		ctx,
 		bson.M{
-			"$or": []bson.M{
-				{"email": input.Email},
-				{"username": input.Username},
-			},
+			"email": request.Email,
 		},
 	).Decode(&existingUser)
 
 	if err == nil {
 		c.JSON(http.StatusConflict, gin.H{
 			"success": false,
-			"message": "Email or username already exists",
+			"message": "Email already exists",
 		})
 		return
 	}
 
-	if !errors.Is(err, mongo.ErrNoDocuments) {
+	if err != mongo.ErrNoDocuments {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"success": false,
-			"message": "Could not check existing account",
+			"message": "Unable to check email",
 		})
 		return
 	}
 
-	otp, err := generateRegistrationOTP()
-	if err != nil {
+	/*
+		Check existing username.
+	*/
+	err = usersCollection.FindOne(
+		ctx,
+		bson.M{
+			"username": request.Username,
+		},
+	).Decode(&existingUser)
+
+	if err == nil {
+		c.JSON(http.StatusConflict, gin.H{
+			"success": false,
+			"message": "Username already exists",
+		})
+		return
+	}
+
+	if err != mongo.ErrNoDocuments {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"success": false,
-			"message": "Could not generate verification code",
+			"message": "Unable to check username",
 		})
 		return
 	}
 
-	hashedPassword, err := bcrypt.GenerateFromPassword(
-		[]byte(input.Password),
+	/*
+		Hash password before storing temporary registration.
+	*/
+	passwordHash, err := bcrypt.GenerateFromPassword(
+		[]byte(request.Password),
 		bcrypt.DefaultCost,
 	)
+
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"success": false,
-			"message": "Could not secure password",
+			"message": "Unable to secure password",
+		})
+		return
+	}
+
+	/*
+		Generate OTP.
+	*/
+	otp, err := generateOTP()
+
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"message": "Unable to generate verification code",
 		})
 		return
 	}
 
 	now := time.Now()
 
-	registrationCollection := config.DB.Collection("registration_otps")
-
+	/*
+		Remove previous registration for this email.
+	*/
 	_, err = registrationCollection.DeleteMany(
 		ctx,
 		bson.M{
-			"email": input.Email,
+			"email": request.Email,
 		},
 	)
+
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"success": false,
-			"message": "Could not prepare verification",
+			"message": "Unable to prepare registration",
 		})
 		return
 	}
 
-	registration := bson.M{
-		"name":       input.Name,
-		"username":   input.Username,
-		"email":      input.Email,
-		"password":   string(hashedPassword),
-		"otp":        otp,
-		"verified":   false,
-		"created_at": now,
-		"expires_at": now.Add(registrationOTPExpiry),
+	/*
+		Remove previous registration for this username.
+	*/
+	_, err = registrationCollection.DeleteMany(
+		ctx,
+		bson.M{
+			"username": request.Username,
+		},
+	)
+
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"message": "Unable to prepare registration",
+		})
+		return
+	}
+
+	registration := RegistrationOTP{
+		ID:             bson.NewObjectID(),
+		Name:           request.Name,
+		Username:       request.Username,
+		Email:          request.Email,
+		Password:       string(passwordHash),
+		OTPHash:        hashOTP(otp),
+		CreatedAt:      now,
+		ExpiresAt:      now.Add(registrationOTPExpiry),
+		Attempts:       0,
+		ProfilePicture: "",
 	}
 
 	_, err = registrationCollection.InsertOne(
 		ctx,
 		registration,
 	)
+
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"success": false,
-			"message": "Could not save registration",
+			"message": "Unable to create registration",
 		})
 		return
 	}
 
+	/*
+		Demo mode:
+		Return OTP to frontend.
+
+		Your current RegisterPage.jsx expects:
+		response.data.otp
+	*/
 	c.JSON(http.StatusOK, gin.H{
-		"success":               true,
-		"message":               "Verification code generated",
-		"requires_verification": true,
-		"otp":                   otp,
-		"email":                 input.Email,
+		"success": true,
+		"message": "Verification code generated",
+		"otp":     otp,
 	})
 }
 
-// ============================================================
-// VERIFY REGISTRATION OTP
-// ============================================================
+/*
+=====================================================
+VERIFY REGISTRATION OTP
+=====================================================
+POST /api/auth/verify-registration-otp
 
+This creates the real user.
+*/
 func VerifyRegistrationOTP(c *gin.Context) {
-	var input struct {
+	var request struct {
 		Email string `json:"email" form:"email"`
 		OTP   string `json:"otp" form:"otp"`
 	}
 
-	if err := c.ShouldBind(&input); err != nil {
+	if err := c.ShouldBind(&request); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"success": false,
 			"message": "Invalid verification request",
@@ -315,10 +390,13 @@ func VerifyRegistrationOTP(c *gin.Context) {
 		return
 	}
 
-	input.Email = strings.ToLower(strings.TrimSpace(input.Email))
-	input.OTP = strings.TrimSpace(input.OTP)
+	request.Email = strings.ToLower(
+		strings.TrimSpace(request.Email),
+	)
 
-	if !validateEmail(input.Email) {
+	request.OTP = strings.TrimSpace(request.OTP)
+
+	if !validateEmail(request.Email) {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"success": false,
 			"message": "Invalid email address",
@@ -326,7 +404,7 @@ func VerifyRegistrationOTP(c *gin.Context) {
 		return
 	}
 
-	if len(input.OTP) != 6 {
+	if len(request.OTP) != otpLength {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"success": false,
 			"message": "Verification code must contain 6 digits",
@@ -334,7 +412,7 @@ func VerifyRegistrationOTP(c *gin.Context) {
 		return
 	}
 
-	for _, character := range input.OTP {
+	for _, character := range request.OTP {
 		if character < '0' || character > '9' {
 			c.JSON(http.StatusBadRequest, gin.H{
 				"success": false,
@@ -353,43 +431,35 @@ func VerifyRegistrationOTP(c *gin.Context) {
 	}
 
 	ctx, cancel := context.WithTimeout(
-		c.Request.Context(),
+		context.Background(),
 		10*time.Second,
 	)
 	defer cancel()
 
-	registrationCollection := config.DB.Collection("registration_otps")
+	registrationCollection :=
+		config.DB.Collection("registration_otps")
 
-	var registration struct {
-		ID        bson.ObjectID `bson:"_id"`
-		Name      string        `bson:"name"`
-		Username  string        `bson:"username"`
-		Email     string        `bson:"email"`
-		Password  string        `bson:"password"`
-		OTP       string        `bson:"otp"`
-		Verified  bool          `bson:"verified"`
-		ExpiresAt time.Time     `bson:"expires_at"`
-	}
+	var registration RegistrationOTP
 
 	err := registrationCollection.FindOne(
 		ctx,
 		bson.M{
-			"email": input.Email,
+			"email": request.Email,
 		},
 	).Decode(&registration)
 
 	if err != nil {
-		if errors.Is(err, mongo.ErrNoDocuments) {
+		if err == mongo.ErrNoDocuments {
 			c.JSON(http.StatusBadRequest, gin.H{
 				"success": false,
-				"message": "Verification code not found or expired",
+				"message": "Registration not found or verification code expired",
 			})
 			return
 		}
 
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"success": false,
-			"message": "Could not verify registration",
+			"message": "Unable to find registration",
 		})
 		return
 	}
@@ -409,7 +479,34 @@ func VerifyRegistrationOTP(c *gin.Context) {
 		return
 	}
 
-	if registration.OTP != input.OTP {
+	if registration.Attempts >= maxOTPAttempts {
+		_, _ = registrationCollection.DeleteOne(
+			ctx,
+			bson.M{
+				"_id": registration.ID,
+			},
+		)
+
+		c.JSON(http.StatusTooManyRequests, gin.H{
+			"success": false,
+			"message": "Too many incorrect attempts. Please register again",
+		})
+		return
+	}
+
+	if hashOTP(request.OTP) != registration.OTPHash {
+		_, _ = registrationCollection.UpdateOne(
+			ctx,
+			bson.M{
+				"_id": registration.ID,
+			},
+			bson.M{
+				"$inc": bson.M{
+					"attempts": 1,
+				},
+			},
+		)
+
 		c.JSON(http.StatusBadRequest, gin.H{
 			"success": false,
 			"message": "Invalid verification code",
@@ -417,6 +514,9 @@ func VerifyRegistrationOTP(c *gin.Context) {
 		return
 	}
 
+	/*
+		Check email again.
+	*/
 	usersCollection := config.DB.Collection("users")
 
 	var existingUser models.User
@@ -424,56 +524,95 @@ func VerifyRegistrationOTP(c *gin.Context) {
 	err = usersCollection.FindOne(
 		ctx,
 		bson.M{
-			"$or": []bson.M{
-				{"email": registration.Email},
-				{"username": registration.Username},
-			},
+			"email": registration.Email,
 		},
 	).Decode(&existingUser)
 
 	if err == nil {
+		_, _ = registrationCollection.DeleteOne(
+			ctx,
+			bson.M{
+				"_id": registration.ID,
+			},
+		)
+
 		c.JSON(http.StatusConflict, gin.H{
 			"success": false,
-			"message": "Email or username already exists",
+			"message": "Email already exists",
 		})
 		return
 	}
 
-	if !errors.Is(err, mongo.ErrNoDocuments) {
+	if err != mongo.ErrNoDocuments {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"success": false,
-			"message": "Could not check account",
+			"message": "Unable to check email",
 		})
 		return
 	}
 
-	user := models.User{
-		ID:       bson.NewObjectID(),
-		Name:     registration.Name,
-		Username: registration.Username,
-		Email:    registration.Email,
-		Password: registration.Password,
-		Role:     "creator",
+	/*
+		Check username again.
+	*/
+	err = usersCollection.FindOne(
+		ctx,
+		bson.M{
+			"username": registration.Username,
+		},
+	).Decode(&existingUser)
+
+	if err == nil {
+		_, _ = registrationCollection.DeleteOne(
+			ctx,
+			bson.M{
+				"_id": registration.ID,
+			},
+		)
+
+		c.JSON(http.StatusConflict, gin.H{
+			"success": false,
+			"message": "Username already exists",
+		})
+		return
 	}
 
-	_, err = usersCollection.InsertOne(ctx, user)
+	if err != mongo.ErrNoDocuments {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"message": "Unable to check username",
+		})
+		return
+	}
+
+	/*
+		Create actual user.
+	*/
+	user := models.User{
+		ID:             bson.NewObjectID(),
+		Name:           registration.Name,
+		Username:       registration.Username,
+		Email:          registration.Email,
+		Password:       registration.Password,
+		Role:           "creator",
+		ProfilePicture: registration.ProfilePicture,
+	}
+
+	_, err = usersCollection.InsertOne(
+		ctx,
+		user,
+	)
 
 	if err != nil {
-		if mongo.IsDuplicateKeyError(err) {
-			c.JSON(http.StatusConflict, gin.H{
-				"success": false,
-				"message": "Email or username already exists",
-			})
-			return
-		}
-
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"success": false,
-			"message": "Could not create account",
+			"message": "Unable to create account",
 		})
 		return
 	}
 
+	/*
+		Delete temporary registration.
+	*/
 	_, _ = registrationCollection.DeleteOne(
 		ctx,
 		bson.M{
@@ -484,28 +623,23 @@ func VerifyRegistrationOTP(c *gin.Context) {
 	c.JSON(http.StatusCreated, gin.H{
 		"success": true,
 		"message": "Account created successfully",
-		"user": gin.H{
-			"id":              user.ID.Hex(),
-			"name":            user.Name,
-			"username":        user.Username,
-			"email":           user.Email,
-			"role":            user.Role,
-			"profile_picture": user.ProfilePicture,
-		},
+		"user":    userResponse(user),
 	})
 }
 
-// ============================================================
-// LOGIN
-// ============================================================
-
+/*
+=====================================================
+LOGIN
+=====================================================
+POST /api/auth/login
+*/
 func Login(c *gin.Context) {
-	var input struct {
+	var request struct {
 		Email    string `json:"email" form:"email"`
 		Password string `json:"password" form:"password"`
 	}
 
-	if err := c.ShouldBind(&input); err != nil {
+	if err := c.ShouldBind(&request); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"success": false,
 			"message": "Invalid login request",
@@ -513,20 +647,22 @@ func Login(c *gin.Context) {
 		return
 	}
 
-	input.Email = strings.ToLower(strings.TrimSpace(input.Email))
+	request.Email = strings.ToLower(
+		strings.TrimSpace(request.Email),
+	)
 
-	if input.Email == "" || input.Password == "" {
+	if !validateEmail(request.Email) {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"success": false,
-			"message": "Email and password are required",
+			"message": "Please enter a valid email address",
 		})
 		return
 	}
 
-	if !validateEmail(input.Email) {
+	if request.Password == "" {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"success": false,
-			"message": "Please enter a valid email address",
+			"message": "Password is required",
 		})
 		return
 	}
@@ -540,40 +676,24 @@ func Login(c *gin.Context) {
 	}
 
 	ctx, cancel := context.WithTimeout(
-		c.Request.Context(),
+		context.Background(),
 		10*time.Second,
 	)
 	defer cancel()
 
 	var user models.User
 
-	err := config.DB.Collection("users").FindOne(
-		ctx,
-		bson.M{
-			"email": input.Email,
-		},
-	).Decode(&user)
+	err := config.DB.
+		Collection("users").
+		FindOne(
+			ctx,
+			bson.M{
+				"email": request.Email,
+			},
+		).
+		Decode(&user)
 
 	if err != nil {
-		if errors.Is(err, mongo.ErrNoDocuments) {
-			c.JSON(http.StatusUnauthorized, gin.H{
-				"success": false,
-				"message": "Invalid email or password",
-			})
-			return
-		}
-
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"success": false,
-			"message": "Failed to login",
-		})
-		return
-	}
-
-	if bcrypt.CompareHashAndPassword(
-		[]byte(user.Password),
-		[]byte(input.Password),
-	) != nil {
 		c.JSON(http.StatusUnauthorized, gin.H{
 			"success": false,
 			"message": "Invalid email or password",
@@ -581,7 +701,20 @@ func Login(c *gin.Context) {
 		return
 	}
 
-	jwtSecret := strings.TrimSpace(os.Getenv("JWT_SECRET"))
+	if err := bcrypt.CompareHashAndPassword(
+		[]byte(user.Password),
+		[]byte(request.Password),
+	); err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{
+			"success": false,
+			"message": "Invalid email or password",
+		})
+		return
+	}
+
+	jwtSecret := strings.TrimSpace(
+		os.Getenv("JWT_SECRET"),
+	)
 
 	if jwtSecret == "" {
 		c.JSON(http.StatusInternalServerError, gin.H{
@@ -591,29 +724,26 @@ func Login(c *gin.Context) {
 		return
 	}
 
-	now := time.Now()
-
-	claims := jwt.MapClaims{
-		"user_id": user.ID.Hex(),
-		"email":   user.Email,
-		"role":    user.Role,
-		"exp":     now.Add(24 * time.Hour).Unix(),
-		"iat":     now.Unix(),
-	}
-
 	token := jwt.NewWithClaims(
 		jwt.SigningMethodHS256,
-		claims,
+		jwt.MapClaims{
+			"user_id": user.ID.Hex(),
+			"email":   user.Email,
+			"role":    user.Role,
+			"exp": time.Now().
+				Add(24 * time.Hour).
+				Unix(),
+		},
 	)
 
-	tokenString, err := token.SignedString(
+	signedToken, err := token.SignedString(
 		[]byte(jwtSecret),
 	)
 
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"success": false,
-			"message": "Failed to create authentication token",
+			"message": "Unable to create login session",
 		})
 		return
 	}
@@ -621,26 +751,20 @@ func Login(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "Login successful",
-		"token":   tokenString,
-		"user": gin.H{
-			"id":              user.ID.Hex(),
-			"name":            user.Name,
-			"username":        user.Username,
-			"email":           user.Email,
-			"role":            user.Role,
-			"profile_picture": user.ProfilePicture,
-		},
+		"token":   signedToken,
+		"user":    userResponse(user),
 	})
 }
 
-// ============================================================
-// UPDATE PROFILE
-// ============================================================
-
+/*
+=====================================================
+UPDATE PROFILE
+=====================================================
+PATCH /api/auth/profile
+*/
 func UpdateProfile(c *gin.Context) {
 	var request struct {
 		Name           string `json:"name"`
-		Username       string `json:"username"`
 		ProfilePicture string `json:"profile_picture"`
 	}
 
@@ -672,70 +796,10 @@ func UpdateProfile(c *gin.Context) {
 		return
 	}
 
-	name := strings.TrimSpace(request.Name)
-	username := strings.TrimSpace(request.Username)
-
-	if name != "" && (len(name) < 2 || len(name) > 80) {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"success": false,
-			"message": "Name must contain 2 to 80 characters",
-		})
-		return
-	}
-
-	if username != "" && (len(username) < 3 || len(username) > 30) {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"success": false,
-			"message": "Username must contain 3 to 30 characters",
-		})
-		return
-	}
-
-	if username != "" {
-		for _, character := range username {
-			validCharacter :=
-				(character >= 'a' && character <= 'z') ||
-					(character >= 'A' && character <= 'Z') ||
-					(character >= '0' && character <= '9') ||
-					character == '_' ||
-					character == '.'
-
-			if !validCharacter {
-				c.JSON(http.StatusBadRequest, gin.H{
-					"success": false,
-					"message": "Username contains invalid characters",
-				})
-				return
-			}
-		}
-	}
-
-	if request.ProfilePicture != "" {
-		if !strings.HasPrefix(request.ProfilePicture, "data:image/") {
-			c.JSON(http.StatusBadRequest, gin.H{
-				"success": false,
-				"message": "Invalid profile picture",
-			})
-			return
-		}
-
-		if len(request.ProfilePicture) > 7*1024*1024 {
-			c.JSON(http.StatusBadRequest, gin.H{
-				"success": false,
-				"message": "Profile picture must be smaller than 7 MB",
-			})
-			return
-		}
-	}
-
 	update := bson.M{}
 
-	if name != "" {
-		update["name"] = name
-	}
-
-	if username != "" {
-		update["username"] = username
+	if strings.TrimSpace(request.Name) != "" {
+		update["name"] = strings.TrimSpace(request.Name)
 	}
 
 	if request.ProfilePicture != "" {
@@ -759,60 +823,24 @@ func UpdateProfile(c *gin.Context) {
 	}
 
 	ctx, cancel := context.WithTimeout(
-		c.Request.Context(),
+		context.Background(),
 		10*time.Second,
 	)
 	defer cancel()
 
-	if username != "" {
-		var existingUser models.User
-
-		err = config.DB.Collection("users").FindOne(
+	_, err = config.DB.
+		Collection("users").
+		UpdateOne(
 			ctx,
 			bson.M{
-				"username": username,
-				"_id": bson.M{
-					"$ne": objectID,
-				},
+				"_id": objectID,
 			},
-		).Decode(&existingUser)
-
-		if err == nil {
-			c.JSON(http.StatusConflict, gin.H{
-				"success": false,
-				"message": "Username already exists",
-			})
-			return
-		}
-
-		if !errors.Is(err, mongo.ErrNoDocuments) {
-			c.JSON(http.StatusInternalServerError, gin.H{
-				"success": false,
-				"message": "Could not check username",
-			})
-			return
-		}
-	}
-
-	_, err = config.DB.Collection("users").UpdateOne(
-		ctx,
-		bson.M{
-			"_id": objectID,
-		},
-		bson.M{
-			"$set": update,
-		},
-	)
+			bson.M{
+				"$set": update,
+			},
+		)
 
 	if err != nil {
-		if mongo.IsDuplicateKeyError(err) {
-			c.JSON(http.StatusConflict, gin.H{
-				"success": false,
-				"message": "Username already exists",
-			})
-			return
-		}
-
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"success": false,
 			"message": "Unable to update profile",
@@ -822,12 +850,15 @@ func UpdateProfile(c *gin.Context) {
 
 	var user models.User
 
-	err = config.DB.Collection("users").FindOne(
-		ctx,
-		bson.M{
-			"_id": objectID,
-		},
-	).Decode(&user)
+	err = config.DB.
+		Collection("users").
+		FindOne(
+			ctx,
+			bson.M{
+				"_id": objectID,
+			},
+		).
+		Decode(&user)
 
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
@@ -839,22 +870,16 @@ func UpdateProfile(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
-		"message": "Profile updated successfully",
-		"user": gin.H{
-			"id":              user.ID.Hex(),
-			"name":            user.Name,
-			"username":        user.Username,
-			"email":           user.Email,
-			"role":            user.Role,
-			"profile_picture": user.ProfilePicture,
-		},
+		"user":    userResponse(user),
 	})
 }
 
-// ============================================================
-// CHANGE PASSWORD
-// ============================================================
-
+/*
+=====================================================
+CHANGE PASSWORD
+=====================================================
+POST /api/auth/change-password
+*/
 func ChangePassword(c *gin.Context) {
 	var request struct {
 		CurrentPassword string `json:"current_password" form:"current_password"`
@@ -879,16 +904,6 @@ func ChangePassword(c *gin.Context) {
 		return
 	}
 
-	objectID, err := bson.ObjectIDFromHex(userID)
-
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"success": false,
-			"message": "Invalid user ID",
-		})
-		return
-	}
-
 	if request.CurrentPassword == "" {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"success": false,
@@ -897,10 +912,21 @@ func ChangePassword(c *gin.Context) {
 		return
 	}
 
-	if len(request.NewPassword) < 6 || len(request.NewPassword) > 72 {
+	if len(request.NewPassword) < 6 ||
+		len(request.NewPassword) > 72 {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"success": false,
 			"message": "New password must contain 6 to 72 characters",
+		})
+		return
+	}
+
+	objectID, err := bson.ObjectIDFromHex(userID)
+
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"message": "Invalid user ID",
 		})
 		return
 	}
@@ -914,40 +940,35 @@ func ChangePassword(c *gin.Context) {
 	}
 
 	ctx, cancel := context.WithTimeout(
-		c.Request.Context(),
+		context.Background(),
 		10*time.Second,
 	)
 	defer cancel()
 
 	var user models.User
 
-	err = config.DB.Collection("users").FindOne(
-		ctx,
-		bson.M{
-			"_id": objectID,
-		},
-	).Decode(&user)
+	err = config.DB.
+		Collection("users").
+		FindOne(
+			ctx,
+			bson.M{
+				"_id": objectID,
+			},
+		).
+		Decode(&user)
 
 	if err != nil {
-		if errors.Is(err, mongo.ErrNoDocuments) {
-			c.JSON(http.StatusNotFound, gin.H{
-				"success": false,
-				"message": "User not found",
-			})
-			return
-		}
-
-		c.JSON(http.StatusInternalServerError, gin.H{
+		c.JSON(http.StatusNotFound, gin.H{
 			"success": false,
-			"message": "Could not find user",
+			"message": "User not found",
 		})
 		return
 	}
 
-	if bcrypt.CompareHashAndPassword(
+	if err := bcrypt.CompareHashAndPassword(
 		[]byte(user.Password),
 		[]byte(request.CurrentPassword),
-	) != nil {
+	); err != nil {
 		c.JSON(http.StatusUnauthorized, gin.H{
 			"success": false,
 			"message": "Current password is incorrect",
@@ -955,10 +976,11 @@ func ChangePassword(c *gin.Context) {
 		return
 	}
 
-	hashedPassword, err := bcrypt.GenerateFromPassword(
+	newPasswordHash, err := bcrypt.GenerateFromPassword(
 		[]byte(request.NewPassword),
 		bcrypt.DefaultCost,
 	)
+
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"success": false,
@@ -967,17 +989,19 @@ func ChangePassword(c *gin.Context) {
 		return
 	}
 
-	_, err = config.DB.Collection("users").UpdateOne(
-		ctx,
-		bson.M{
-			"_id": objectID,
-		},
-		bson.M{
-			"$set": bson.M{
-				"password": string(hashedPassword),
+	_, err = config.DB.
+		Collection("users").
+		UpdateOne(
+			ctx,
+			bson.M{
+				"_id": objectID,
 			},
-		},
-	)
+			bson.M{
+				"$set": bson.M{
+					"password": string(newPasswordHash),
+				},
+			},
+		)
 
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
@@ -991,29 +1015,4 @@ func ChangePassword(c *gin.Context) {
 		"success": true,
 		"message": "Password changed successfully",
 	})
-}
-
-// ============================================================
-// CLEANUP
-// ============================================================
-
-func CleanupExpiredRegistrations() {
-	if config.DB == nil {
-		return
-	}
-
-	ctx, cancel := context.WithTimeout(
-		context.Background(),
-		10*time.Second,
-	)
-	defer cancel()
-
-	_, _ = config.DB.Collection("registration_otps").DeleteMany(
-		ctx,
-		bson.M{
-			"expires_at": bson.M{
-				"$lt": time.Now(),
-			},
-		},
-	)
 }
